@@ -1,0 +1,4 @@
+(executable
+ (public_name handlebars-ml)
+ (name main)
+ (libraries handlebars_ml))
