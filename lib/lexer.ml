@@ -23,6 +23,12 @@ module Print_utils = struct
     fprintf fmt fs (escape_ustring us)
 end
 
+let uchar_array_of_string str =
+  Array.init (String.length str) (fun i -> Uchar.of_char (String.get str i))
+
+let string_of_uchar_array c_arr =
+  Array.to_seq c_arr |> Seq.map Uchar.to_char |> String.of_seq
+
 type dot_path = [ `OneDot | `TwoDot ] [@@deriving show]
 
 type literal = [ `String of string | `Int of int | `Float of float ]
@@ -33,34 +39,39 @@ type ident_path_segment =
 [@@deriving show]
 
 type evalable =
-  [ `InParen of evalable
-  | `IdentPath of ident_path_segment list
-  | `Literal of literal ]
-  list
+  [ `IdentPath of ident_path_segment list
+  | `Literal of literal
+  | `App of string * evalable list
+  | `WhateverMakesSense of evalable list ]
 [@@deriving show]
 
-type special_block =
-  [ `If of evalable | `Else | `Each of evalable | `With of evalable ]
+type blockattr = [ `StripBefore | `StripAfter | `Unescaped ] [@@deriving show]
+
+type open_block =
+  [ `If of evalable
+  | `Else
+  | `Unless of evalable
+  | `Each of evalable
+  | `With of evalable ]
+[@@deriving show]
+
+type close_block = [ `If | `Each | `With ] [@@deriving show]
 
 type token =
-  [ `Substitution of evalable
-  | `StripBefore
-  | `StripAfter
+  [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
+  | `Substitution of evalable * blockattr list
+  | `OpenSpecial of open_block * blockattr list
+  | `CloseSpecial of close_block * blockattr list
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show]
 
 let templ_open = [%sedlex.regexp? "{{"]
 let templ_close = [%sedlex.regexp? "}}"]
 let drop_left n c_arr = Array.sub c_arr n (Array.length c_arr - n)
+let drop_right n c_arr = Array.sub c_arr 0 (Array.length c_arr - n)
 let letters = [%sedlex.regexp? 'a' .. 'z' | 'A' .. 'Z']
 let digits = [%sedlex.regexp? '0' .. '9']
-let ident = [%sedlex.regexp? letters, Star (letters | digits | '_')]
-
-let uchar_array_of_string str =
-  Array.init (String.length str) (fun i -> Uchar.of_char (String.get str i))
-
-let string_of_uchar_array c_arr =
-  Array.to_seq c_arr |> Seq.map Uchar.to_char |> String.of_seq
+let ident = [%sedlex.regexp? letters, Star (letters | digits | '_' | '-')]
 
 let norm tokens =
   let normed, last =
@@ -76,13 +87,13 @@ let norm tokens =
   in
   if Array.length last > 0 then normed @ [ `Raw last ] else normed
 
-type lex_error = { msg : string; pos : Lexing.position }
+type lex_error = { msg : string; pos : Lexing.position; buf : lexbuf }
 
 let pp_position fmt pos =
   Format.fprintf fmt "line %d, column %d" pos.Lexing.pos_lnum
     (pos.Lexing.pos_cnum - pos.Lexing.pos_bol)
 
-let pp_lex_error fmt { msg; pos } =
+let pp_lex_error fmt { msg; pos; _ } =
   pp_position fmt pos;
   Format.fprintf fmt ": %s" msg
 
@@ -91,11 +102,11 @@ let show_lex_error e =
   Format.flush_str_formatter ()
 
 type lex_result = (token list, lex_error) result [@@deriving show]
-type 'a lex_partial_result = ('a * lexbuf, lex_error) result
+type 'a partial_lex_result = ('a * lexbuf, lex_error) result
 
 let mkerr msg buf =
   let pos = lexing_position_curr buf in
-  { msg; pos }
+  { msg; pos; buf }
 
 let ( >>= ) = Result.bind
 let ( let* ) = ( >>= )
@@ -103,91 +114,106 @@ let ( let* ) = ( >>= )
 let rec lex acc buf : lex_result =
   match%sedlex buf with
   | '\\', templ_open -> lex (acc @ [ `Raw (lexeme buf |> drop_left 1) ]) buf
-  | templ_open ->
-      let* acc', buf = lex_templ buf in
-      lex (acc @ acc') buf
+  | templ_open -> lex_templ acc buf
   | Plus (Compl ('\\' | '{')) | any -> lex (acc @ [ `Raw (lexeme buf) ]) buf
   | eof -> Ok (norm acc)
   | _ -> Error (mkerr "unexpected token" buf)
 
-and lex_templ buf : token list lex_partial_result =
+and lex_templ acc buf : lex_result =
+  let attrs = match%sedlex buf with '~' -> [ `StripBefore ] | _ -> [] in
   match%sedlex buf with
-  | '~' ->
-      let* evalable, buf = lex_templ_inner [] buf in
-      lex_templ_close ([ `StripBefore ] @ [ `Substitution evalable ]) buf
+  | '!' ->
+      let* comment, buf = lex_in_comment buf in
+      lex (acc @ [ `Comment comment ]) buf
+  | '{' ->
+      let attrs = attrs @ [ `Unescaped ] in
+      let lex_stop buf =
+        match%sedlex buf with
+        | Opt white_space, '}' -> Ok ([], buf)
+        | _ -> Error (mkerr "expected closing brace" buf)
+      in
+      let* (_, evalable), buf = lex_eval_or_apply lex_stop buf in
+      let* attrs', buf = lex_templ_close buf in
+      lex (acc @ [ `Substitution (evalable, attrs @ attrs') ]) buf
+  | eof -> Error (mkerr "unexpected end of input" buf)
   | _ ->
-      let* evalable, buf = lex_templ_inner [] buf in
-      lex_templ_close [ `Substitution evalable ] buf
+      let* (attrs', evalable), buf = lex_eval_or_apply lex_templ_close buf in
+      let attrs = attrs @ attrs' in
+      lex (acc @ [ `Substitution (evalable, attrs) ]) buf
 
-and lex_templ_close acc buf : token list lex_partial_result =
+and lex_templ_close buf : blockattr list partial_lex_result =
   match%sedlex buf with
-  | white_space -> lex_templ_close acc buf
-  | '~', templ_close -> Ok (acc @ [ `StripAfter ], buf)
-  | templ_close -> Ok (acc, buf)
+  | Opt white_space, '~', templ_close -> Ok ([ `StripAfter ], buf)
+  | Opt white_space, templ_close -> Ok ([], buf)
   | _ -> Error (mkerr "expected template close" buf)
 
-and lex_templ_inner acc buf : evalable lex_partial_result =
-  match%sedlex buf with
-  | white_space -> lex_templ_inner acc buf
-  | '~', templ_close | templ_close -> (
-      match acc with
-      | [] -> Error (mkerr "empty substitution block" buf)
-      | _ ->
-          rollback buf;
-          Ok (acc, buf))
-  | '(' ->
-      let* evalable, buf = lex_inside_parens [] buf in
-      lex_templ_inner (acc @ [ `InParen evalable ]) buf
-  | _ ->
-      let* ident_path, buf = lex_ident_path [] buf in
-      lex_templ_inner (acc @ [ `IdentPath ident_path ]) buf
-
-and lex_inside_parens acc buf : evalable lex_partial_result =
-  let rec lex_after_fn_name acc buf =
+and lex_in_comment buf =
+  let rec aux acc buf =
     match%sedlex buf with
-    | ')' -> (
-        match acc with
-        | [] -> Error (mkerr "empty parenthesis block" buf)
-        | _ -> Ok (acc, buf))
-    | white_space -> lex_after_fn_name acc buf
-    | _ ->
-        let* ident_path, buf = lex_ident_path [] buf in
-        lex_after_fn_name (acc @ [ `IdentPath ident_path ]) buf
+    | templ_close -> Ok (acc, buf)
+    | any -> aux (Array.append acc (lexeme buf)) buf
+    | _ -> Error (mkerr "expected template close" buf)
   in
-  match%sedlex buf with
-  | white_space -> lex_inside_parens acc buf
-  | ident ->
-      let name = lexeme buf |> string_of_uchar_array in
-      lex_after_fn_name [ `IdentPath [ `Ident name ] ] buf
-  | _ -> Error (mkerr "expected identifier or closing parenthesis" buf)
+  aux [||] buf
 
-and lex_ident_path acc buf : ident_path_segment list lex_partial_result =
-  match%sedlex buf with
-  | ident ->
-      let name = lexeme buf |> string_of_uchar_array in
-      lex_nested_ident (acc @ [ `Ident name ]) buf
-  | '.', '/' -> lex_ident_path (acc @ [ `DotPath `OneDot ]) buf
-  | "..", '/' -> lex_ident_path (acc @ [ `DotPath `TwoDot ]) buf
-  | '.' -> Ok (acc @ [ `DotPath `OneDot ], buf)
-  | ".." -> Ok (acc @ [ `DotPath `TwoDot ], buf)
-  | _ -> Error (mkerr "expected evalable expression" buf)
+and lex_eval_or_apply (lex_stop : lexbuf -> 'a partial_lex_result) buf :
+    ('a * evalable) partial_lex_result =
+  let* evalable, buf = lex_eval buf in
+  match evalable with
+  | `IdentPath [ `Ident name ] ->
+      (* e.g. {{ f }} could refer to the fn call f or the substitution variable f *)
+      let* (stop_result, args), buf = lex_args lex_stop [] buf in
+      if args = [] then
+        Ok
+          ((stop_result, `WhateverMakesSense [ `App (name, []); evalable ]), buf)
+      (* {{ f a b c }} - with arguments - can only be a fn call *)
+        else Ok ((stop_result, `App (name, args)), buf)
+  | _ ->
+      let* stop_result, buf = lex_stop buf in
+      Ok ((stop_result, evalable), buf)
 
-and lex_nested_ident acc buf : ident_path_segment list lex_partial_result =
+and lex_eval buf : evalable partial_lex_result =
+  (* lex for one evalable expression *)
   match%sedlex buf with
-  | '.', ident ->
-      let name =
-        (* drop '.' *)
-        lexeme buf |> drop_left 1 |> string_of_uchar_array
+  | white_space -> lex_eval buf
+  | '(', Opt white_space ->
+      let lex_close_paren buf =
+        match%sedlex buf with
+        | Opt white_space, ')' -> Ok ([], buf)
+        | _ -> Error (mkerr "expected closing paren" buf)
       in
-      lex_nested_ident (acc @ [ `Ident name ]) buf
-  | '.', '[', Opt white_space -> (
+      let* (_, evalable), buf = lex_apply lex_close_paren buf in
+      Ok (evalable, buf)
+  | '"' | '\'' | '0' .. '9' ->
+      rollback buf;
       let* lit, buf = lex_literal buf in
-      match%sedlex buf with
-      | Opt white_space, ']' -> Ok (acc @ [ `Index lit ], buf)
-      | _ -> Error (mkerr "expected closing bracket" buf))
-  | _ -> Ok (acc, buf)
+      Ok (`Literal lit, buf)
+  | eof -> Error (mkerr "unexpected end of input" buf)
+  | _ ->
+      let* ident_path, buf = lex_ident_path buf in
+      Ok (`IdentPath ident_path, buf)
 
-and lex_literal buf : literal lex_partial_result =
+and lex_apply lex_stop buf : ('a * evalable) partial_lex_result =
+  match%sedlex buf with
+  | white_space -> lex_apply lex_stop buf
+  | ident ->
+      let name = lexeme buf |> string_of_uchar_array in
+      let* (stop_result, args), buf = lex_args lex_stop [] buf in
+      Ok ((stop_result, `App (name, args)), buf)
+  | _ -> Error (mkerr "expected function call" buf)
+
+and lex_args (lex_stop : lexbuf -> 'a partial_lex_result) acc buf :
+    ('a * evalable list) partial_lex_result =
+  match%sedlex buf with
+  | white_space -> lex_args lex_stop acc buf
+  | _ -> (
+      match lex_stop buf with
+      | Ok (stop_result, buf) -> Ok ((stop_result, acc), buf)
+      | Error { buf; _ } ->
+          let* evalable, buf = lex_eval buf in
+          lex_args lex_stop (acc @ [ evalable ]) buf)
+
+and lex_literal buf : literal partial_lex_result =
   match%sedlex buf with
   | '"' | '\'' -> lex_string_literal ~closing_char:(lexeme_char buf 0) [||] buf
   | Plus '0' .. '9', '.', Opt '0' .. '9' -> (
@@ -203,7 +229,7 @@ and lex_literal buf : literal lex_partial_result =
   | _ -> Error (mkerr "expected literal" buf)
 
 and lex_string_literal ~closing_char acc buf :
-    [> `String of string ] lex_partial_result =
+    [> `String of string ] partial_lex_result =
   let aux acc buf =
     match%sedlex buf with
     | '\\', any ->
@@ -224,6 +250,34 @@ and lex_string_literal ~closing_char acc buf :
         Ok (`String (string_of_uchar_array acc), buf)
       else lex_string_literal ~closing_char (Array.append acc [| matched |]) buf
   | _ -> aux acc buf
+
+and lex_ident_path buf : ident_path_segment list partial_lex_result =
+  let rec aux acc buf =
+    match%sedlex buf with
+    | ident ->
+        let name = lexeme buf |> string_of_uchar_array in
+        lex_nested_ident (acc @ [ `Ident name ]) buf
+    | '.', '/' -> aux (acc @ [ `DotPath `OneDot ]) buf
+    | "..", '/' -> aux (acc @ [ `DotPath `TwoDot ]) buf
+    | '.' -> Ok (acc @ [ `DotPath `OneDot ], buf)
+    | ".." -> Ok (acc @ [ `DotPath `TwoDot ], buf)
+    | _ -> Error (mkerr "expected evalable expression" buf)
+  and lex_nested_ident acc buf =
+    match%sedlex buf with
+    | '.', ident ->
+        let name =
+          (* drop '.' *)
+          lexeme buf |> drop_left 1 |> string_of_uchar_array
+        in
+        lex_nested_ident (acc @ [ `Ident name ]) buf
+    | '.', '[', Opt white_space -> (
+        let* lit, buf = lex_literal buf in
+        match%sedlex buf with
+        | Opt white_space, ']' -> Ok (acc @ [ `Index lit ], buf)
+        | _ -> Error (mkerr "expected closing bracket" buf))
+    | _ -> Ok (acc, buf)
+  in
+  aux [] buf
 
 let make_test input expected =
   let buf = Sedlexing.Utf8.from_string input in
@@ -246,7 +300,10 @@ let%test "lexes template with substitution block" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `Substitution [ `IdentPath [ `Ident "world" ] ];
+         `Substitution
+           ( `WhateverMakesSense
+               [ `App ("world", []); `IdentPath [ `Ident "world" ] ],
+             [] );
        ])
 
 let%test "lexes template with substitution block and strip before" =
@@ -254,8 +311,10 @@ let%test "lexes template with substitution block and strip before" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `StripBefore;
-         `Substitution [ `IdentPath [ `Ident "world" ] ];
+         `Substitution
+           ( `WhateverMakesSense
+               [ `App ("world", []); `IdentPath [ `Ident "world" ] ],
+             [ `StripBefore ] );
        ])
 
 let%test "lexes template with substitution block and strip before + after" =
@@ -263,9 +322,10 @@ let%test "lexes template with substitution block and strip before + after" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `StripBefore;
-         `Substitution [ `IdentPath [ `Ident "world" ] ];
-         `StripAfter;
+         `Substitution
+           ( `WhateverMakesSense
+               [ `App ("world", []); `IdentPath [ `Ident "world" ] ],
+             [ `StripBefore; `StripAfter ] );
        ])
 
 let%test "lexes template substitution block with nested ident" =
@@ -273,8 +333,8 @@ let%test "lexes template substitution block with nested ident" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `StripBefore;
-         `Substitution [ `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ] ];
+         `Substitution
+           (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ], [ `StripBefore ]);
        ])
 
 let%test "lexes template substitution block with dot path" =
@@ -282,18 +342,16 @@ let%test "lexes template substitution block with dot path" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `StripBefore;
          `Substitution
-           [
-             `IdentPath
+           ( `IdentPath
                [
                  `DotPath `TwoDot;
                  `DotPath `OneDot;
                  `Ident "a";
                  `Ident "b";
                  `Ident "c";
-               ];
-           ];
+               ],
+             [ `StripBefore ] );
        ])
 
 let%test "lexes parenthesis expressions" =
@@ -301,15 +359,10 @@ let%test "lexes parenthesis expressions" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `StripBefore;
          `Substitution
-           [
-             `InParen
-               [
-                 `IdentPath [ `Ident "fncall" ];
-                 `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ];
-               ];
-           ];
+           ( `App
+               ("fncall", [ `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ] ]),
+             [ `StripBefore ] );
        ])
 
 let%test "lexes substitution with indexing" =
@@ -317,6 +370,46 @@ let%test "lexes substitution with indexing" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `StripBefore;
-         `Substitution [ `IdentPath [ `Ident "a"; `Index (`String "world") ] ];
+         `Substitution
+           ( `IdentPath [ `Ident "a"; `Index (`String "world") ],
+             [ `StripBefore ] );
        ])
+
+let%test "lexes nested fn calls ad literals" =
+  make_test "hello, {{~fncall a.b.c (fn2 1 2.3) }}"
+    (Ok
+       [
+         `Raw (uchar_array_of_string "hello, ");
+         `Substitution
+           ( `App
+               ( "fncall",
+                 [
+                   `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ];
+                   `App ("fn2", [ `Literal (`Int 1); `Literal (`Float 2.3) ]);
+                 ] ),
+             [ `StripBefore ] );
+       ])
+
+let%test "lexes comments" =
+  make_test "hello, {{! this is a comment }} world"
+    (Ok
+       [
+         `Raw (uchar_array_of_string "hello, ");
+         `Comment (uchar_array_of_string " this is a comment ");
+         `Raw (uchar_array_of_string " world");
+       ])
+
+let%test "lexes unescaped substitution" =
+  make_test "hello, {{~{ a.b.c }}}"
+    (Ok
+       [
+         `Raw (uchar_array_of_string "hello, ");
+         `Substitution
+           ( `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ],
+             [ `StripBefore; `Unescaped ] );
+       ])
+
+let%test "lexing unclosed '{{{' block throws error" =
+  let buf = Sedlexing.Utf8.from_string "hello, {{{ ~a.b.c }}" in
+  let result = lex [] buf in
+  match result with Ok _ -> false | Error _ -> true
