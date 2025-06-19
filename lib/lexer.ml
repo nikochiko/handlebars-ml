@@ -413,3 +413,13 @@ let%test "lexing unclosed '{{{' block throws error" =
   let buf = Sedlexing.Utf8.from_string "hello, {{{ ~a.b.c }}" in
   let result = lex [] buf in
   match result with Ok _ -> false | Error _ -> true
+
+let%test "lexes fn application without parenthesis" =
+  make_test "hello, {{~fn a.b.c}}"
+    (Ok
+       [
+         `Raw (uchar_array_of_string "hello, ");
+         `Substitution
+           ( `App ("fn", [ `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ] ]),
+             [ `StripBefore ] );
+       ])
