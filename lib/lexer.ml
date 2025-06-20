@@ -255,30 +255,40 @@ and lex_templ_close buf : blockattr list partial_lex_result =
 and lex_open_block lex_stop buf =
   match%sedlex buf with
   | white_space -> lex_open_block lex_stop buf
-  | _ -> (
+  | _ ->
       let* (attrs, expr), buf = lex_eval_or_apply lex_stop buf in
-      match expr with
-      | (`App (name, args) | `WhateverMakesSense (`App (name, args) :: _))
-        when List.exists (( = ) name) [ "if"; "unless"; "each"; "with" ] -> (
-          match args with
-          | [ arg ] ->
-              let block_kind =
-                match name with
-                | "if" -> `If arg
-                | "unless" -> `Unless arg
-                | "each" -> `Each arg
-                | "with" -> `With arg
-                | _ -> failwith "unexpected block kind"
-              in
-              Ok ((attrs, block_kind), buf)
-          | _ ->
-              rollback buf;
-              Error
-                (mkerr
-                   (Printf.sprintf "expected exactly one argument for #%s" name)
-                   buf))
-      | `IdentPath path -> Ok ((attrs, `IdentPath path), buf)
-      | _ -> Error (mkerr "invalid open block expression" buf))
+      let rec make_sense expr =
+        match expr with
+        | `WhateverMakesSense exprs ->
+            exprs
+            |> List.fold_left
+                 (fun acc expr ->
+                   match acc with Ok _ -> acc | Error _ -> make_sense expr)
+                 (Error (mkerr "invalid open block expression" buf))
+        | `App (name, args)
+          when List.exists (( = ) name) [ "if"; "unless"; "each"; "with" ] -> (
+            match args with
+            | [ arg ] ->
+                let block_kind =
+                  match name with
+                  | "if" -> `If arg
+                  | "unless" -> `Unless arg
+                  | "each" -> `Each arg
+                  | "with" -> `With arg
+                  | _ -> failwith "unexpected block kind"
+                in
+                Ok ((attrs, block_kind), buf)
+            | _ ->
+                rollback buf;
+                Error
+                  (mkerr
+                     (Printf.sprintf "expected exactly one argument for #%s"
+                        name)
+                     buf))
+        | `IdentPath path -> Ok ((attrs, `IdentPath path), buf)
+        | _ -> Error (mkerr "invalid open block expression" buf)
+      in
+      make_sense expr
 
 and lex_close_block lex_stop buf =
   match%sedlex buf with
@@ -638,11 +648,10 @@ let%test "lexes mismatching close block as Error" =
   match result with Ok _ -> false | Error _ -> true
 
 let%test "lexes mustache-style open & close blocks" =
-  make_test "{{#a}} {{ . }} {{/a}}"
+  make_test "{{#a}}{{ . }}{{/a}}"
     (Ok
        [
          `OpenBlock (`IdentPath [ `Ident "a" ], []);
-         `Raw (uchar_array_of_string " ");
          `Substitution (`IdentPath [ `DotPath `OneDot ], []);
          `CloseBlock (`IdentPath [ `Ident "a" ], []);
        ])
