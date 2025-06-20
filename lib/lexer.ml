@@ -233,8 +233,8 @@ and lex_literal buf : literal partial_lex_result =
       match int_of_string_opt num with
       | Some n -> Ok (`Int n, buf)
       | None -> Error (mkerr "invalid integer literal" buf))
-  | "true", Compl (letters | digits | '.' | '_') -> Ok (`Bool true, buf)
-  | "false", Compl (letters | digits | '.' | '_') -> Ok (`Bool false, buf)
+  | "true" -> Ok (`Bool true, buf)
+  | "false" -> Ok (`Bool false, buf)
   | _ -> Error (mkerr "expected literal" buf)
 
 and lex_string_literal ~closing_char acc buf :
