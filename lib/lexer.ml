@@ -31,7 +31,8 @@ let string_of_uchar_array c_arr =
 
 type dot_path = [ `OneDot | `TwoDot ] [@@deriving show]
 
-type literal = [ `String of string | `Int of int | `Float of float ]
+type literal =
+  [ `String of string | `Int of int | `Float of float | `Bool of bool ]
 [@@deriving show]
 
 type ident_path_segment =
@@ -71,7 +72,13 @@ let drop_left n c_arr = Array.sub c_arr n (Array.length c_arr - n)
 let drop_right n c_arr = Array.sub c_arr 0 (Array.length c_arr - n)
 let letters = [%sedlex.regexp? 'a' .. 'z' | 'A' .. 'Z']
 let digits = [%sedlex.regexp? '0' .. '9']
-let ident = [%sedlex.regexp? letters, Star (letters | digits | '_' | '-')]
+let ident = [%sedlex.regexp? letters, Star (letters | digits | '_')]
+
+let start_of_a_literal =
+  [%sedlex.regexp?
+    ( '"' | '\''
+    | Plus '0' .. '9'
+    | ("true" | "false"), Compl (letters | digits | '.' | '_') )]
 
 let norm tokens =
   let normed, last =
@@ -184,7 +191,7 @@ and lex_eval buf : evalable partial_lex_result =
       in
       let* (_, evalable), buf = lex_apply lex_close_paren buf in
       Ok (evalable, buf)
-  | '"' | '\'' | '0' .. '9' ->
+  | start_of_a_literal ->
       rollback buf;
       let* lit, buf = lex_literal buf in
       Ok (`Literal lit, buf)
@@ -226,6 +233,8 @@ and lex_literal buf : literal partial_lex_result =
       match int_of_string_opt num with
       | Some n -> Ok (`Int n, buf)
       | None -> Error (mkerr "invalid integer literal" buf))
+  | "true", Compl (letters | digits | '.' | '_') -> Ok (`Bool true, buf)
+  | "false", Compl (letters | digits | '.' | '_') -> Ok (`Bool false, buf)
   | _ -> Error (mkerr "expected literal" buf)
 
 and lex_string_literal ~closing_char acc buf :
@@ -422,4 +431,21 @@ let%test "lexes fn application without parenthesis" =
          `Substitution
            ( `App ("fn", [ `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ] ]),
              [ `StripBefore ] );
+       ])
+
+let%test "lexes booleans correctly" =
+  make_test "hello, {{~true}} and {{~false}} and substitute {{true_looking}}"
+    (Ok
+       [
+         `Raw (uchar_array_of_string "hello, ");
+         `Substitution (`Literal (`Bool true), [ `StripBefore ]);
+         `Raw (uchar_array_of_string " and ");
+         `Substitution (`Literal (`Bool false), [ `StripBefore ]);
+         `Raw (uchar_array_of_string " and substitute ");
+         `Substitution
+           ( `WhateverMakesSense
+               [
+                 `App ("true_looking", []); `IdentPath [ `Ident "true_looking" ];
+               ],
+             [] );
        ])
