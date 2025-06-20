@@ -225,6 +225,20 @@ and lex_templ ~expected_close_stack acc buf : lex_result =
       lex ~expected_close_stack
         (acc @ [ `OpenBlock (block, attrs @ attrs') ])
         buf
+  | '^' ->
+      let* (attrs', block), buf = lex_open_block lex_templ_close buf in
+      let expected_close =
+        match block with
+        | `If _ -> `If
+        | `Unless _ -> `Unless
+        | `Each _ -> `Each
+        | `With _ -> `With
+        | `IdentPath path -> `IdentPath path
+      in
+      let expected_close_stack = expected_close :: expected_close_stack in
+      lex ~expected_close_stack
+        (acc @ [ `OpenInvertedBlock (block, attrs @ attrs') ])
+        buf
   | '/' -> (
       let* (attrs, block), buf = lex_close_block lex_templ_close buf in
       match expected_close_stack with
@@ -652,6 +666,15 @@ let%test "lexes mustache-style open & close blocks" =
     (Ok
        [
          `OpenBlock (`IdentPath [ `Ident "a" ], []);
+         `Substitution (`IdentPath [ `DotPath `OneDot ], []);
+         `CloseBlock (`IdentPath [ `Ident "a" ], []);
+       ])
+
+let%test "lexes inverted blocks" =
+  make_test "{{^a}}{{ . }}{{/a}}"
+    (Ok
+       [
+         `OpenInvertedBlock (`IdentPath [ `Ident "a" ], []);
          `Substitution (`IdentPath [ `DotPath `OneDot ], []);
          `CloseBlock (`IdentPath [ `Ident "a" ], []);
        ])
