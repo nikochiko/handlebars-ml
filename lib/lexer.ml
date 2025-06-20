@@ -449,3 +449,13 @@ let%test "lexes booleans correctly" =
                ],
              [] );
        ])
+
+let%test "lexes StripAfter in unescaped substitution" =
+  make_test "hello, {{~{ a.b.c }~}}"
+    (Ok
+       [
+         `Raw (uchar_array_of_string "hello, ");
+         `Substitution
+           ( `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ],
+             [ `StripBefore; `Unescaped; `StripAfter ] );
+       ])
