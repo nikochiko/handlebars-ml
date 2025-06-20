@@ -3,4 +3,4 @@
  (modules lexer)
  (libraries sedlex)
  (inline_tests)
- (preprocess (pps ppx_inline_test sedlex.ppx ppx_deriving.show)))
+ (preprocess (pps ppx_inline_test sedlex.ppx ppx_deriving.show ppx_deriving.eq)))
