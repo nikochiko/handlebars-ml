@@ -1,27 +1,7 @@
 open Sedlexing
+open Types
 
-module Print_utils = struct
-  let ocaml_escape c = c |> Char.chr |> Char.escaped
-
-  let escape_ucode = function
-    | (10 | 13 | 9 | 8) as c -> ocaml_escape c (* \n \r \t \b *)
-    | c when c < 0x20 || c >= 127 -> Printf.sprintf "\\u{%04x}" c
-    | c -> ocaml_escape c
-
-  let escape_uchar u = escape_ucode @@ Uchar.to_int u
-
-  let escape_uchar_in_string u =
-    let code = Uchar.to_int u in
-    match code with 34 -> "\\\"" | _ -> escape_ucode code
-
-  let escape_ustring us =
-    Array.to_seq us
-    |> Seq.fold_left (fun s u -> s ^ escape_uchar_in_string u) ""
-
-  let ustring_printer fprintf fmt (us : Uchar.t array) =
-    let fs = format_of_string "(Ustring \"%s\")" in
-    fprintf fmt fs (escape_ustring us)
-end
+type 'a partial_lex_result = ('a * Sedlexing.lexbuf, lex_error) result
 
 let uchar_array_of_string str =
   Array.init (String.length str) (fun i -> Uchar.of_char (String.get str i))
@@ -29,65 +9,21 @@ let uchar_array_of_string str =
 let string_of_uchar_array c_arr =
   Array.to_seq c_arr |> Seq.map Uchar.to_char |> String.of_seq
 
-type dot_path = [ `OneDot | `TwoDot ] [@@deriving show, eq]
-
-type literal =
-  [ `String of string | `Int of int | `Float of float | `Bool of bool ]
-[@@deriving show, eq]
-
-type ident_path_segment =
-  [ `Ident of string | `DotPath of dot_path | `Index of literal ]
-[@@deriving show, eq]
-
-type ident_path = [ `IdentPath of ident_path_segment list ]
-[@@deriving show, eq]
-
-type evalable =
-  [ ident_path
-  | `Literal of literal
-  | `App of string * evalable list
-  | `WhateverMakesSense of evalable list ]
-[@@deriving show]
-
-type blockattr = [ `StripBefore | `StripAfter | `Unescaped ] [@@deriving show]
-
-(* handlebarsjs supports function applications too here,
-   but the semantics of it scare me very much.
-   choosing not to support them for anyone's sanity. *)
-type open_block_kind =
-  [ `If of evalable
-  | `Unless of evalable
-  | `Each of evalable
-  | `With of evalable
-  | ident_path ]
-[@@deriving show]
-
-type close_block = [ `If | `Unless | `Each | `With | ident_path ]
-[@@deriving show, eq]
-
-type token =
-  [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
-  | `Substitution of evalable * blockattr list
-  | `OpenBlock of open_block_kind * blockattr list
-  | `OpenInvertedBlock of open_block_kind * blockattr list
-  | `Else of blockattr list
-  | `CloseBlock of close_block * blockattr list
-  | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
-[@@deriving show]
-
 let templ_open = [%sedlex.regexp? "{{"]
 let templ_close = [%sedlex.regexp? "}}"]
 let drop_left n c_arr = Array.sub c_arr n (Array.length c_arr - n)
 let drop_right n c_arr = Array.sub c_arr 0 (Array.length c_arr - n)
 let letters = [%sedlex.regexp? 'a' .. 'z' | 'A' .. 'Z']
 let digits = [%sedlex.regexp? '0' .. '9']
-let ident = [%sedlex.regexp? letters, Star (letters | digits | '_')]
+let ident = [%sedlex.regexp? (letters | '_'), Star (letters | '_' | digits)]
 
-let start_of_a_literal =
+let start_of_literal =
   [%sedlex.regexp?
     ( '"' | '\''
     | Plus '0' .. '9'
-    | ("true" | "false"), Compl (letters | digits | '.' | '_') )]
+    | ("true" | "false" | "null"), Compl (letters | digits | '.' | '_')
+    | '{', Compl '{'
+    | '[' )]
 
 let string_of_path_segment segment =
   match segment with
@@ -141,24 +77,7 @@ let norm tokens =
   in
   if Array.length last > 0 then normed @ [ `Raw last ] else normed
 
-type lex_error = { msg : string; pos : Lexing.position; buf : lexbuf }
-
-let pp_position fmt pos =
-  Format.fprintf fmt "line %d, column %d" pos.Lexing.pos_lnum
-    (pos.Lexing.pos_cnum - pos.Lexing.pos_bol)
-
-let pp_lex_error fmt { msg; pos; _ } =
-  pp_position fmt pos;
-  Format.fprintf fmt ": %s" msg
-
-let show_lex_error e =
-  pp_lex_error Format.str_formatter e;
-  Format.flush_str_formatter ()
-
-type lex_result = (token list, lex_error) result [@@deriving show]
-type 'a partial_lex_result = ('a * lexbuf, lex_error) result
-
-let mkerr msg buf =
+let mkerr msg buf : lex_error =
   let pos = lexing_position_curr buf in
   { msg; pos; buf }
 
@@ -186,7 +105,7 @@ let rec lex ?(expected_close_stack : close_block list = []) acc buf : lex_result
 and lex_templ ~expected_close_stack acc buf : lex_result =
   let attrs = match%sedlex buf with '~' -> [ `StripBefore ] | _ -> [] in
   match%sedlex buf with
-  | Opt white_space, "else", Opt white_space, Opt '~', templ_close ->
+  | Star white_space, "else", Star white_space, Opt '~', templ_close ->
       if expected_close_stack = [] then
         Error (mkerr "unexpected 'else' without an open block" buf)
       else
@@ -203,7 +122,7 @@ and lex_templ ~expected_close_stack acc buf : lex_result =
       let attrs = `Unescaped :: attrs in
       let lex_stop buf =
         match%sedlex buf with
-        | Opt white_space, '}' -> Ok ([], buf)
+        | Star white_space, '}' -> Ok ([], buf)
         | _ -> Error (mkerr "expected closing brace" buf)
       in
       let* (_, evalable), buf = lex_eval_or_apply lex_stop buf in
@@ -237,7 +156,7 @@ and lex_templ ~expected_close_stack acc buf : lex_result =
       in
       let expected_close_stack = expected_close :: expected_close_stack in
       lex ~expected_close_stack
-        (acc @ [ `OpenInvertedBlock (block, attrs @ attrs') ])
+        (acc @ [ `OpenBlock (block, attrs @ attrs' @ [ `Inverted ]) ])
         buf
   | '/' -> (
       let* (attrs, block), buf = lex_close_block lex_templ_close buf in
@@ -262,8 +181,8 @@ and lex_templ ~expected_close_stack acc buf : lex_result =
 
 and lex_templ_close buf : blockattr list partial_lex_result =
   match%sedlex buf with
-  | Opt white_space, '~', templ_close -> Ok ([ `StripAfter ], buf)
-  | Opt white_space, templ_close -> Ok ([], buf)
+  | Star white_space, '~', templ_close -> Ok ([ `StripAfter ], buf)
+  | Star white_space, templ_close -> Ok ([], buf)
   | _ -> Error (mkerr "expected template close" buf)
 
 and lex_open_block lex_stop buf =
@@ -349,15 +268,15 @@ and lex_eval buf : evalable partial_lex_result =
   (* lex for one evalable expression *)
   match%sedlex buf with
   | white_space -> lex_eval buf
-  | '(', Opt white_space ->
+  | '(', Star white_space ->
       let lex_close_paren buf =
         match%sedlex buf with
-        | Opt white_space, ')' -> Ok ([], buf)
+        | Star white_space, ')' -> Ok ([], buf)
         | _ -> Error (mkerr "expected closing paren" buf)
       in
       let* (_, evalable), buf = lex_apply lex_close_paren buf in
       Ok (evalable, buf)
-  | start_of_a_literal ->
+  | start_of_literal ->
       rollback buf;
       let* lit, buf = lex_literal buf in
       Ok (`Literal lit, buf)
@@ -386,44 +305,108 @@ and lex_args (lex_stop : lexbuf -> 'a partial_lex_result) acc buf :
           let* evalable, buf = lex_eval buf in
           lex_args lex_stop (acc @ [ evalable ]) buf)
 
-and lex_literal buf : literal partial_lex_result =
+and lex_literal buf : [> literal ] partial_lex_result =
   match%sedlex buf with
-  | '"' | '\'' -> lex_string_literal ~closing_char:(lexeme_char buf 0) [||] buf
+  | '[' -> lex_list buf
+  | '{' -> lex_assoc buf
+  | _ ->
+      (* TODO: this can be made prettier? *)
+      let* lit, buf = lex_primitive_literal buf in
+      let v =
+        match lit with
+        | `String s -> `String s
+        | `Int i -> `Int i
+        | `Float f -> `Float f
+        | `Bool b -> `Bool b
+        | `Null -> `Null
+      in
+      Ok (v, buf)
+
+and lex_list buf : literal partial_lex_result =
+  match%sedlex buf with
+  | Star white_space, ']' -> Ok (`List [], buf)
+  | _ ->
+      let* lit, buf = lex_literal buf in
+      finish_list [ lit ] buf
+
+and finish_list acc buf =
+  match%sedlex buf with
+  | Star white_space, ']' -> Ok (`List acc, buf)
+  | ',', Star white_space ->
+      let* lit, buf = lex_literal buf in
+      finish_list (acc @ [ lit ]) buf
+  | _ -> Error (mkerr "expected closing bracket or comma" buf)
+
+and lex_assoc buf : literal partial_lex_result =
+  match%sedlex buf with
+  | Star white_space, '}' -> Ok (`Assoc [], buf)
+  | _ ->
+      let* (k, v), buf = lex_assoc_item buf in
+      finish_assoc [ (k, v) ] buf
+
+and finish_assoc acc buf =
+  match%sedlex buf with
+  | white_space -> finish_assoc acc buf
+  | '}' -> Ok (`Assoc acc, buf)
+  | ',', Star white_space ->
+      let* (k, v), buf = lex_assoc_item buf in
+      finish_assoc (acc @ [ (k, v) ]) buf
+  | _ -> Error (mkerr "expected closing brace or comma" buf)
+
+and lex_assoc_item buf : (string * literal) partial_lex_result =
+  let* key, buf = lex_assoc_key buf in
+  match%sedlex buf with
+  | Star white_space, ':', Star white_space ->
+      let* lit, buf = lex_literal buf in
+      Ok ((key, lit), buf)
+  | _ -> Error (mkerr "expected ':' after assoc key" buf)
+
+and lex_assoc_key buf : string partial_lex_result =
+  match%sedlex buf with
+  | white_space -> lex_assoc_key buf
+  | ident ->
+      let key = lexeme buf |> string_of_uchar_array in
+      Ok (key, buf)
+  | '"' ->
+      let* s, buf = lex_string ~closing_char:(Uchar.of_char '"') [||] buf in
+      Ok (s, buf)
+  | _ -> Error (mkerr "expected assoc key" buf)
+
+and lex_primitive_literal buf : primitive_literal partial_lex_result =
+  match%sedlex buf with
+  | '"' | '\'' ->
+      let* s, buf = lex_string ~closing_char:(lexeme_char buf 0) [||] buf in
+      Ok (`String s, buf)
   | Plus '0' .. '9', '.', Opt '0' .. '9' -> (
       let num = lexeme buf |> string_of_uchar_array in
       match float_of_string_opt num with
       | Some f -> Ok (`Float f, buf)
-      | None -> Error (mkerr "invalid float literal" buf))
+      | None -> Error (mkerr "invalid float primitive_literal" buf))
   | Plus '0' .. '9' -> (
       let num = lexeme buf |> string_of_uchar_array in
       match int_of_string_opt num with
       | Some n -> Ok (`Int n, buf)
-      | None -> Error (mkerr "invalid integer literal" buf))
+      | None -> Error (mkerr "invalid integer primitive_literal" buf))
   | "true" -> Ok (`Bool true, buf)
   | "false" -> Ok (`Bool false, buf)
-  | _ -> Error (mkerr "expected literal" buf)
+  | "null" -> Ok (`Null, buf)
+  | _ -> Error (mkerr "expected primitive_literal" buf)
 
-and lex_string_literal ~closing_char acc buf :
-    [> `String of string ] partial_lex_result =
+and lex_string ~closing_char acc buf : string partial_lex_result =
   let aux acc buf =
     match%sedlex buf with
     | '\\', any ->
-        lex_string_literal ~closing_char
-          (Array.append acc [| lexeme_char buf 1 |])
-          buf
+        lex_string ~closing_char (Array.append acc [| lexeme_char buf 1 |]) buf
     | any ->
-        lex_string_literal ~closing_char
-          (Array.append acc [| lexeme_char buf 0 |])
-          buf
-    | eof -> Error (mkerr "unterminated string literal" buf)
+        lex_string ~closing_char (Array.append acc [| lexeme_char buf 0 |]) buf
+    | eof -> Error (mkerr "unterminated string primitive_literal" buf)
     | _ -> assert false
   in
   match%sedlex buf with
   | '"' | '\'' ->
       let matched = lexeme_char buf 0 in
-      if matched = closing_char then
-        Ok (`String (string_of_uchar_array acc), buf)
-      else lex_string_literal ~closing_char (Array.append acc [| matched |]) buf
+      if matched = closing_char then Ok (string_of_uchar_array acc, buf)
+      else lex_string ~closing_char (Array.append acc [| matched |]) buf
   | _ -> aux acc buf
 
 and lex_ident_path buf : ident_path_segment list partial_lex_result =
@@ -445,10 +428,10 @@ and lex_ident_path buf : ident_path_segment list partial_lex_result =
           lexeme buf |> drop_left 1 |> string_of_uchar_array
         in
         lex_nested_ident (acc @ [ `Ident name ]) buf
-    | '.', '[', Opt white_space -> (
-        let* lit, buf = lex_literal buf in
+    | '.', '[', Star white_space -> (
+        let* lit, buf = lex_primitive_literal buf in
         match%sedlex buf with
-        | Opt white_space, ']' -> Ok (acc @ [ `Index lit ], buf)
+        | Star white_space, ']' -> Ok (acc @ [ `Index lit ], buf)
         | _ -> Error (mkerr "expected closing bracket" buf))
     | _ -> Ok (acc, buf)
   in
@@ -550,7 +533,7 @@ let%test "lexes substitution with indexing" =
              [ `StripBefore ] );
        ])
 
-let%test "lexes nested fn calls ad literals" =
+let%test "lexes nested fn calls and primitive literals" =
   make_test "hello, {{~fncall a.b.c (fn2 1 2.3) }}"
     (Ok
        [
@@ -674,7 +657,71 @@ let%test "lexes inverted blocks" =
   make_test "{{^a}}{{ . }}{{/a}}"
     (Ok
        [
-         `OpenInvertedBlock (`IdentPath [ `Ident "a" ], []);
+         `OpenBlock (`IdentPath [ `Ident "a" ], [ `Inverted ]);
          `Substitution (`IdentPath [ `DotPath `OneDot ], []);
          `CloseBlock (`IdentPath [ `Ident "a" ], []);
+       ])
+
+let%test "lexes example 1 from handlebarsjs docs" =
+  let input = {|
+{{#with person}}
+{{firstname}} {{lastname}}
+{{/with}}
+|} in
+  make_test input
+    (Ok
+       [
+         `Raw (uchar_array_of_string "\n");
+         `OpenBlock (`With (`IdentPath [ `Ident "person" ]), []);
+         `Raw (uchar_array_of_string "\n");
+         `Substitution
+           ( `WhateverMakesSense
+               [ `App ("firstname", []); `IdentPath [ `Ident "firstname" ] ],
+             [] );
+         `Raw (uchar_array_of_string " ");
+         `Substitution
+           ( `WhateverMakesSense
+               [ `App ("lastname", []); `IdentPath [ `Ident "lastname" ] ],
+             [] );
+         `Raw (uchar_array_of_string "\n");
+         `CloseBlock (`With, []);
+         `Raw (uchar_array_of_string "\n");
+       ])
+
+let%test "lexes JSON object" =
+  let input =
+    {|
+{{#with
+  { "name"     : "John", "age": 30, "isEmployed": true,
+    "skills": ["JavaScript", "Python", "OCaml"] }
+}}{{ name }}{{/with}}
+|}
+  in
+  make_test input
+    (Ok
+       [
+         `Raw (uchar_array_of_string "\n");
+         `OpenBlock
+           ( `With
+               (`Literal
+                  (`Assoc
+                     [
+                       ("name", `String "John");
+                       ("age", `Int 30);
+                       ("isEmployed", `Bool true);
+                       ( "skills",
+                         `List
+                           [
+                             `String "JavaScript";
+                             `String "Python";
+                             `String "OCaml";
+                           ] );
+                     ])),
+             [] );
+         `Substitution
+           ( `WhateverMakesSense
+               [ `App ("name", []); `IdentPath [ `Ident "name" ] ],
+             [] );
+         `CloseBlock (`With, []);
+         `Raw (uchar_array_of_string "\n");
        ])

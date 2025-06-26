@@ -1,6 +1,6 @@
 (library
  (name handlebars_ml)
- (modules lexer)
- (libraries sedlex)
+ (modules lexer compiler types)
+ (libraries sedlex yojson)
  (inline_tests)
  (preprocess (pps ppx_inline_test sedlex.ppx ppx_deriving.show ppx_deriving.eq)))
