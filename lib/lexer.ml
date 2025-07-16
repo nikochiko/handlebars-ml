@@ -50,7 +50,7 @@ let string_of_ident_path (path : ident_path) =
   let _, result = aux path in
   result
 
-let string_of_close_block (block : [> close_block ]) =
+let string_of_block_kind (block : block_kind) =
   match block with
   | `If -> "if"
   | `Unless -> "unless"
@@ -112,27 +112,26 @@ let invert_child child =
   | Child { parent; block } -> ElseChild { parent; block }
   | ElseChild { parent; block } -> Child { parent; block }
 
-let rec lex ?(expected_close_stack : close_block list = [])
-    ?(container = Root []) buf : lex_result =
+let rec lex ?(container = Root []) buf : lex_result =
   match%sedlex buf with
   | '\\', templ_open ->
       let token = `Raw (lexeme buf |> drop_left 1) in
-      lex ~expected_close_stack ~container:(add_token container token) buf
-  | templ_open -> lex_templ ~expected_close_stack ~container buf
+      lex ~container:(add_token container token) buf
+  | templ_open -> lex_templ ~container buf
   | Plus (Compl ('\\' | '{')) | any ->
       let container = add_token container (`Raw (lexeme buf)) in
-      lex ~expected_close_stack ~container buf
+      lex ~container buf
   | eof -> (
       match container with
       | Root acc -> Ok (norm acc)
       | Child { block; _ } | ElseChild { block; _ } ->
           let msg =
-            Printf.sprintf "unclosed block: %s" (show_close_block block.kind)
+            Printf.sprintf "unclosed block: %s" (show_block_kind block.kind)
           in
           Error (mkerr msg buf))
   | _ -> Error (mkerr "unexpected input" buf)
 
-and lex_templ ~expected_close_stack ~container buf : lex_result =
+and lex_templ ~container buf : lex_result =
   let container =
     match%sedlex buf with
     | '~' -> add_token container `WhitespaceControl
@@ -149,11 +148,11 @@ and lex_templ ~expected_close_stack ~container buf : lex_result =
               add_token container `WhitespaceControl
             else container
           in
-          lex ~expected_close_stack ~container buf)
+          lex ~container buf)
   | '!' ->
       let* comment, buf = lex_in_comment buf in
       let container = add_token container (`Comment comment) in
-      lex ~expected_close_stack ~container buf
+      lex ~container buf
   | '{' ->
       let attrs = [ `Unescaped ] in
       let lex_stop buf =
@@ -169,22 +168,18 @@ and lex_templ ~expected_close_stack ~container buf : lex_result =
           add_token container `WhitespaceControl
         else container
       in
-      lex ~expected_close_stack ~container buf
+      lex ~container buf
   | '#' ->
       let* (attrs, block), buf = lex_open_block lex_templ_close buf in
-      let expected_close = block.kind in
-      let expected_close_stack = expected_close :: expected_close_stack in
       let container = mk_child container block.kind block.expr in
       let container =
         if List.mem `StripAfter attrs then
           add_token container `WhitespaceControl
         else container
       in
-      lex ~expected_close_stack ~container buf
+      lex ~container buf
   | '^' ->
       let* (attrs, block), buf = lex_open_block lex_templ_close buf in
-      let expected_close = block.kind in
-      let expected_close_stack = expected_close :: expected_close_stack in
       let container =
         mk_child container block.kind block.expr |> invert_child
       in
@@ -193,24 +188,25 @@ and lex_templ ~expected_close_stack ~container buf : lex_result =
           add_token container `WhitespaceControl
         else container
       in
-      lex ~expected_close_stack ~container buf
+      lex ~container buf
   | '/' -> (
-      let* (attrs, block), buf = lex_close_block lex_templ_close buf in
-      match expected_close_stack with
-      | [] -> Error (mkerr "unexpected close block without open" buf)
-      | head :: tail when block = head ->
+      let* (attrs, block_kind), buf = lex_close_block lex_templ_close buf in
+      match container with
+      | Root _ -> Error (mkerr "unexpected close block without open" buf)
+      | (Child { block; _ } | ElseChild { block; _ })
+        when block.kind = block_kind ->
           let container = mature_child container in
           let container =
             if List.mem `StripAfter attrs then
               add_token container `WhitespaceControl
             else container
           in
-          lex ~expected_close_stack:tail ~container buf
-      | head :: _ ->
+          lex ~container buf
+      | Child { block; _ } | ElseChild { block; _ } ->
           let msg =
             Printf.sprintf "unexpected close block: %s does not match %s"
-              (string_of_close_block block)
-              (string_of_close_block head)
+              (string_of_block_kind block_kind)
+              (string_of_block_kind block.kind)
           in
           Error (mkerr msg buf))
   | eof -> Error (mkerr "unexpected end of input" buf)
@@ -222,7 +218,7 @@ and lex_templ ~expected_close_stack ~container buf : lex_result =
           add_token container `WhitespaceControl
         else container
       in
-      lex ~expected_close_stack ~container buf
+      lex ~container buf
 
 and lex_templ_close buf : blockattr list partial_lex_result =
   match%sedlex buf with

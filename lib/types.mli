@@ -33,15 +33,10 @@ type open_block = {
   else_content : token list;
 }
 
-and close_block = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
-[@@deriving show, eq]
-
 and token =
   [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
   | `Substitution of evalable * blockattr list
   | `OpenBlock of open_block * blockattr list
-  | `Else of blockattr list
-  | `CloseBlock of close_block * blockattr list
   | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show]
