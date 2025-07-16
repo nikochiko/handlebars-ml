@@ -39,33 +39,35 @@ type evalable =
   | `Literal of literal
   | `App of string * evalable list
   | `WhateverMakesSense of evalable list ]
-[@@deriving show]
+[@@deriving show, eq]
+
+type block_kind = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
+[@@deriving show, eq]
 
 type blockattr = [ `StripBefore | `StripAfter | `Unescaped | `Inverted ]
-[@@deriving show]
+[@@deriving show, eq]
 
 (* handlebarsjs supports function applications too here,
    but the semantics of it scare me very much.
    choosing not to support them for anyone's sanity. *)
-type open_block_kind =
-  [ `If of evalable
-  | `Unless of evalable
-  | `Each of evalable
-  | `With of evalable
-  | ident_path ]
-[@@deriving show]
+type open_block = {
+  kind : block_kind;
+  expr : evalable;
+  content : token list;
+  else_content : token list;
+}
 
-type close_block = [ `If | `Unless | `Each | `With | ident_path ]
-[@@deriving show, eq]
+and close_block = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
 
-type token =
+and token =
   [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
   | `Substitution of evalable * blockattr list
-  | `OpenBlock of open_block_kind * blockattr list
+  | `OpenBlock of open_block * blockattr list
   | `Else of blockattr list
   | `CloseBlock of close_block * blockattr list
+  | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
-[@@deriving show]
+[@@deriving show, eq]
 
 type lex_error = { msg : string; pos : Lexing.position; buf : Sedlexing.lexbuf }
 
@@ -82,3 +84,11 @@ let show_lex_error e =
   Format.flush_str_formatter ()
 
 type lex_result = (token list, lex_error) result [@@deriving show]
+(* | Ok ([tokens])
+     | Error { msg; pos; buf } *)
+
+let uchar_array_of_string str =
+  Array.init (String.length str) (fun i -> Uchar.of_char (String.get str i))
+
+let string_of_uchar_array c_arr =
+  Array.to_seq c_arr |> Seq.map Uchar.to_char |> String.of_seq

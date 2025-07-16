@@ -2,12 +2,8 @@ open Sedlexing
 open Types
 
 type 'a partial_lex_result = ('a * Sedlexing.lexbuf, lex_error) result
-
-let uchar_array_of_string str =
-  Array.init (String.length str) (fun i -> Uchar.of_char (String.get str i))
-
-let string_of_uchar_array c_arr =
-  Array.to_seq c_arr |> Seq.map Uchar.to_char |> String.of_seq
+(* | Ok ([tokens], buf)
+   | Error { msg; pos; buf } *)
 
 let templ_open = [%sedlex.regexp? "{{"]
 let templ_close = [%sedlex.regexp? "}}"]
@@ -60,8 +56,7 @@ let string_of_close_block (block : [> close_block ]) =
   | `Unless -> "unless"
   | `Each -> "each"
   | `With -> "with"
-  | `IdentPath path ->
-      Printf.sprintf "%s" (string_of_ident_path (`IdentPath path))
+  | `Mustache path -> Printf.sprintf "%s" (string_of_ident_path path)
 
 let norm tokens =
   let normed, last =
@@ -84,42 +79,83 @@ let mkerr msg buf : lex_error =
 let ( >>= ) = Result.bind
 let ( let* ) = ( >>= )
 
-let rec lex ?(expected_close_stack : close_block list = []) acc buf : lex_result
-    =
+type container =
+  | Root of token list
+  | Child of { parent : container; block : open_block }
+  | ElseChild of { parent : container; block : open_block }
+
+let add_token container tok =
+  match container with
+  | Root acc -> Root (acc @ [ tok ])
+  | Child { parent; block } ->
+      let { content; _ } = block in
+      let block = { block with content = content @ [ tok ] } in
+      Child { parent; block }
+  | ElseChild { parent; block } ->
+      let { else_content; _ } = block in
+      let block = { block with else_content = else_content @ [ tok ] } in
+      ElseChild { parent; block }
+
+let mature_child container =
+  match container with
+  | Root _ -> failwith "cannot mature root container"
+  | Child { parent; block } | ElseChild { parent; block } ->
+      add_token parent (`OpenBlock (block, []))
+
+let mk_child parent kind expr =
+  let block = { kind; expr; content = []; else_content = [] } in
+  Child { parent; block }
+
+let invert_child child =
+  match child with
+  | Root _ -> failwith "cannot invert root container"
+  | Child { parent; block } -> ElseChild { parent; block }
+  | ElseChild { parent; block } -> Child { parent; block }
+
+let rec lex ?(expected_close_stack : close_block list = [])
+    ?(container = Root []) buf : lex_result =
   match%sedlex buf with
   | '\\', templ_open ->
-      lex ~expected_close_stack (acc @ [ `Raw (lexeme buf |> drop_left 1) ]) buf
-  | templ_open -> lex_templ ~expected_close_stack acc buf
+      let token = `Raw (lexeme buf |> drop_left 1) in
+      lex ~expected_close_stack ~container:(add_token container token) buf
+  | templ_open -> lex_templ ~expected_close_stack ~container buf
   | Plus (Compl ('\\' | '{')) | any ->
-      lex ~expected_close_stack (acc @ [ `Raw (lexeme buf) ]) buf
-  | eof ->
-      if expected_close_stack = [] then Ok (norm acc)
-      else
-        let top_unclosed = List.hd expected_close_stack in
-        let msg =
-          Printf.sprintf "unclosed block: %s" (show_close_block top_unclosed)
-        in
-        Error (mkerr msg buf)
-  | _ -> Error (mkerr "unexpected token" buf)
+      let container = add_token container (`Raw (lexeme buf)) in
+      lex ~expected_close_stack ~container buf
+  | eof -> (
+      match container with
+      | Root acc -> Ok (norm acc)
+      | Child { block; _ } | ElseChild { block; _ } ->
+          let msg =
+            Printf.sprintf "unclosed block: %s" (show_close_block block.kind)
+          in
+          Error (mkerr msg buf))
+  | _ -> Error (mkerr "unexpected input" buf)
 
-and lex_templ ~expected_close_stack acc buf : lex_result =
-  let attrs = match%sedlex buf with '~' -> [ `StripBefore ] | _ -> [] in
+and lex_templ ~expected_close_stack ~container buf : lex_result =
+  let container =
+    match%sedlex buf with
+    | '~' -> add_token container `WhitespaceControl
+    | _ -> container
+  in
   match%sedlex buf with
-  | Star white_space, "else", Star white_space, Opt '~', templ_close ->
-      if expected_close_stack = [] then
-        Error (mkerr "unexpected 'else' without an open block" buf)
-      else
-        let attrs =
-          if lexeme buf |> Array.exists (( = ) (Uchar.of_char '~')) then
-            `StripAfter :: attrs
-          else attrs
-        in
-        lex ~expected_close_stack (acc @ [ `Else attrs ]) buf
+  | Star white_space, "else", Star white_space, Opt '~', templ_close -> (
+      match container with
+      | Root _ -> Error (mkerr "unexpected 'else' without an open block" buf)
+      | _ ->
+          let container = invert_child container in
+          let container =
+            if lexeme buf |> Array.exists (( = ) (Uchar.of_char '~')) then
+              add_token container `WhitespaceControl
+            else container
+          in
+          lex ~expected_close_stack ~container buf)
   | '!' ->
       let* comment, buf = lex_in_comment buf in
-      lex ~expected_close_stack (acc @ [ `Comment comment ]) buf
+      let container = add_token container (`Comment comment) in
+      lex ~expected_close_stack ~container buf
   | '{' ->
-      let attrs = `Unescaped :: attrs in
+      let attrs = [ `Unescaped ] in
       let lex_stop buf =
         match%sedlex buf with
         | Star white_space, '}' -> Ok ([], buf)
@@ -127,45 +163,49 @@ and lex_templ ~expected_close_stack acc buf : lex_result =
       in
       let* (_, evalable), buf = lex_eval_or_apply lex_stop buf in
       let* attrs', buf = lex_templ_close buf in
-      lex ~expected_close_stack
-        (acc @ [ `Substitution (evalable, attrs @ attrs') ])
-        buf
+      let container = add_token container (`Substitution (evalable, attrs)) in
+      let container =
+        if List.mem `StripAfter attrs' then
+          add_token container `WhitespaceControl
+        else container
+      in
+      lex ~expected_close_stack ~container buf
   | '#' ->
-      let* (attrs', block), buf = lex_open_block lex_templ_close buf in
-      let expected_close =
-        match block with
-        | `If _ -> `If
-        | `Unless _ -> `Unless
-        | `Each _ -> `Each
-        | `With _ -> `With
-        | `IdentPath path -> `IdentPath path
-      in
+      let* (attrs, block), buf = lex_open_block lex_templ_close buf in
+      let expected_close = block.kind in
       let expected_close_stack = expected_close :: expected_close_stack in
-      lex ~expected_close_stack
-        (acc @ [ `OpenBlock (block, attrs @ attrs') ])
-        buf
+      let container = mk_child container block.kind block.expr in
+      let container =
+        if List.mem `StripAfter attrs then
+          add_token container `WhitespaceControl
+        else container
+      in
+      lex ~expected_close_stack ~container buf
   | '^' ->
-      let* (attrs', block), buf = lex_open_block lex_templ_close buf in
-      let expected_close =
-        match block with
-        | `If _ -> `If
-        | `Unless _ -> `Unless
-        | `Each _ -> `Each
-        | `With _ -> `With
-        | `IdentPath path -> `IdentPath path
-      in
+      let* (attrs, block), buf = lex_open_block lex_templ_close buf in
+      let expected_close = block.kind in
       let expected_close_stack = expected_close :: expected_close_stack in
-      lex ~expected_close_stack
-        (acc @ [ `OpenBlock (block, attrs @ attrs' @ [ `Inverted ]) ])
-        buf
+      let container =
+        mk_child container block.kind block.expr |> invert_child
+      in
+      let container =
+        if List.mem `StripAfter attrs then
+          add_token container `WhitespaceControl
+        else container
+      in
+      lex ~expected_close_stack ~container buf
   | '/' -> (
       let* (attrs, block), buf = lex_close_block lex_templ_close buf in
       match expected_close_stack with
       | [] -> Error (mkerr "unexpected close block without open" buf)
       | head :: tail when block = head ->
-          lex ~expected_close_stack:tail
-            (acc @ [ `CloseBlock (block, attrs) ])
-            buf
+          let container = mature_child container in
+          let container =
+            if List.mem `StripAfter attrs then
+              add_token container `WhitespaceControl
+            else container
+          in
+          lex ~expected_close_stack:tail ~container buf
       | head :: _ ->
           let msg =
             Printf.sprintf "unexpected close block: %s does not match %s"
@@ -175,9 +215,14 @@ and lex_templ ~expected_close_stack acc buf : lex_result =
           Error (mkerr msg buf))
   | eof -> Error (mkerr "unexpected end of input" buf)
   | _ ->
-      let* (attrs', evalable), buf = lex_eval_or_apply lex_templ_close buf in
-      let attrs = attrs @ attrs' in
-      lex ~expected_close_stack (acc @ [ `Substitution (evalable, attrs) ]) buf
+      let* (attrs, evalable), buf = lex_eval_or_apply lex_templ_close buf in
+      let container = add_token container (`Substitution (evalable, [])) in
+      let container =
+        if List.mem `StripAfter attrs then
+          add_token container `WhitespaceControl
+        else container
+      in
+      lex ~expected_close_stack ~container buf
 
 and lex_templ_close buf : blockattr list partial_lex_result =
   match%sedlex buf with
@@ -201,16 +246,19 @@ and lex_open_block lex_stop buf =
         | `App (name, args)
           when List.exists (( = ) name) [ "if"; "unless"; "each"; "with" ] -> (
             match args with
-            | [ arg ] ->
-                let block_kind =
+            | [ expr ] ->
+                let content = [] in
+                let else_content = [] in
+                let kind =
                   match name with
-                  | "if" -> `If arg
-                  | "unless" -> `Unless arg
-                  | "each" -> `Each arg
-                  | "with" -> `With arg
+                  | "if" -> `If
+                  | "unless" -> `Unless
+                  | "each" -> `Each
+                  | "with" -> `With
                   | _ -> failwith "unexpected block kind"
                 in
-                Ok ((attrs, block_kind), buf)
+                let block = { kind; expr; content; else_content } in
+                Ok ((attrs, block), buf)
             | _ ->
                 rollback buf;
                 Error
@@ -218,7 +266,16 @@ and lex_open_block lex_stop buf =
                      (Printf.sprintf "expected exactly one argument for #%s"
                         name)
                      buf))
-        | `IdentPath path -> Ok ((attrs, `IdentPath path), buf)
+        | `IdentPath path ->
+            Ok
+              ( ( attrs,
+                  {
+                    kind = `Mustache (`IdentPath path);
+                    expr = `IdentPath path;
+                    content = [];
+                    else_content = [];
+                  } ),
+                buf )
         | _ -> Error (mkerr "invalid open block expression" buf)
       in
       make_sense expr
@@ -234,7 +291,7 @@ and lex_close_block lex_stop buf =
         | [ `Ident "unless" ] -> `Unless
         | [ `Ident "each" ] -> `Each
         | [ `Ident "with" ] -> `With
-        | _ -> `IdentPath path
+        | _ -> `Mustache (`IdentPath path)
       in
       let* stop_result, buf = lex_stop buf in
       Ok ((stop_result, block), buf)
@@ -439,7 +496,7 @@ and lex_ident_path buf : ident_path_segment list partial_lex_result =
 
 let make_test input expected =
   let buf = Sedlexing.Utf8.from_string input in
-  let result = lex [] buf in
+  let result = lex buf in
   match result = expected with
   | true -> true
   | false ->
@@ -469,10 +526,11 @@ let%test "lexes template with substitution block and strip before" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
            ( `WhateverMakesSense
                [ `App ("world", []); `IdentPath [ `Ident "world" ] ],
-             [ `StripBefore ] );
+             [] );
        ])
 
 let%test "lexes template with substitution block and strip before + after" =
@@ -480,10 +538,12 @@ let%test "lexes template with substitution block and strip before + after" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
            ( `WhateverMakesSense
                [ `App ("world", []); `IdentPath [ `Ident "world" ] ],
-             [ `StripBefore; `StripAfter ] );
+             [] );
+         `WhitespaceControl;
        ])
 
 let%test "lexes template substitution block with nested ident" =
@@ -491,8 +551,8 @@ let%test "lexes template substitution block with nested ident" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `Substitution
-           (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ], [ `StripBefore ]);
+         `WhitespaceControl;
+         `Substitution (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ], []);
        ])
 
 let%test "lexes template substitution block with dot path" =
@@ -500,6 +560,7 @@ let%test "lexes template substitution block with dot path" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
            ( `IdentPath
                [
@@ -509,7 +570,7 @@ let%test "lexes template substitution block with dot path" =
                  `Ident "b";
                  `Ident "c";
                ],
-             [ `StripBefore ] );
+             [] );
        ])
 
 let%test "lexes parenthesis expressions" =
@@ -517,10 +578,11 @@ let%test "lexes parenthesis expressions" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
            ( `App
                ("fncall", [ `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ] ]),
-             [ `StripBefore ] );
+             [] );
        ])
 
 let%test "lexes substitution with indexing" =
@@ -528,9 +590,8 @@ let%test "lexes substitution with indexing" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `Substitution
-           ( `IdentPath [ `Ident "a"; `Index (`String "world") ],
-             [ `StripBefore ] );
+         `WhitespaceControl;
+         `Substitution (`IdentPath [ `Ident "a"; `Index (`String "world") ], []);
        ])
 
 let%test "lexes nested fn calls and primitive literals" =
@@ -538,6 +599,7 @@ let%test "lexes nested fn calls and primitive literals" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
            ( `App
                ( "fncall",
@@ -545,7 +607,7 @@ let%test "lexes nested fn calls and primitive literals" =
                    `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ];
                    `App ("fn2", [ `Literal (`Int 1); `Literal (`Float 2.3) ]);
                  ] ),
-             [ `StripBefore ] );
+             [] );
        ])
 
 let%test "lexes comments" =
@@ -562,14 +624,14 @@ let%test "lexes unescaped substitution" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
-           ( `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ],
-             [ `Unescaped; `StripBefore ] );
+           (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ], [ `Unescaped ]);
        ])
 
 let%test "lexing unclosed '{{{' block throws error" =
   let buf = Sedlexing.Utf8.from_string "hello, {{{ ~a.b.c }}" in
-  let result = lex [] buf in
+  let result = lex buf in
   match result with Ok _ -> false | Error _ -> true
 
 let%test "lexes fn application without parenthesis" =
@@ -577,9 +639,10 @@ let%test "lexes fn application without parenthesis" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
            ( `App ("fn", [ `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ] ]),
-             [ `StripBefore ] );
+             [] );
        ])
 
 let%test "lexes booleans correctly" =
@@ -587,9 +650,11 @@ let%test "lexes booleans correctly" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `Substitution (`Literal (`Bool true), [ `StripBefore ]);
+         `WhitespaceControl;
+         `Substitution (`Literal (`Bool true), []);
          `Raw (uchar_array_of_string " and ");
-         `Substitution (`Literal (`Bool false), [ `StripBefore ]);
+         `WhitespaceControl;
+         `Substitution (`Literal (`Bool false), []);
          `Raw (uchar_array_of_string " and substitute ");
          `Substitution
            ( `WhateverMakesSense
@@ -604,9 +669,10 @@ let%test "lexes StripAfter in unescaped substitution" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
-           ( `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ],
-             [ `Unescaped; `StripBefore; `StripAfter ] );
+           (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ], [ `Unescaped ]);
+         `WhitespaceControl;
        ])
 
 let%test "lexes else block" =
@@ -614,11 +680,14 @@ let%test "lexes else block" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `OpenBlock (`If (`IdentPath [ `Ident "a" ]), []);
-         `Raw (uchar_array_of_string "yes");
-         `Else [];
-         `Raw (uchar_array_of_string "no");
-         `CloseBlock (`If, []);
+         `OpenBlock
+           ( {
+               kind = `If;
+               expr = `IdentPath [ `Ident "a" ];
+               content = [ `Raw (uchar_array_of_string "yes") ];
+               else_content = [ `Raw (uchar_array_of_string "no") ];
+             },
+             [] );
        ])
 
 let%test "lexes else looking things as something else" =
@@ -626,40 +695,52 @@ let%test "lexes else looking things as something else" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
+         `WhitespaceControl;
          `Substitution
            ( `WhateverMakesSense
                [ `App ("else1", []); `IdentPath [ `Ident "else1" ] ],
-             [ `StripBefore ] );
+             [] );
        ])
 
 let%test "lexes else block without open block as Error" =
   let buf =
     Sedlexing.Utf8.from_string "{{#if a}}ok{{/if}} {{else}} no business here"
   in
-  let result = lex [] buf in
+  let result = lex buf in
   match result with Ok _ -> false | Error _ -> true
 
 let%test "lexes mismatching close block as Error" =
   let buf = Sedlexing.Utf8.from_string "{{#if a}}ok{{/each}}" in
-  let result = lex [] buf in
+  let result = lex buf in
   match result with Ok _ -> false | Error _ -> true
 
 let%test "lexes mustache-style open & close blocks" =
   make_test "{{#a}}{{ . }}{{/a}}"
     (Ok
        [
-         `OpenBlock (`IdentPath [ `Ident "a" ], []);
-         `Substitution (`IdentPath [ `DotPath `OneDot ], []);
-         `CloseBlock (`IdentPath [ `Ident "a" ], []);
+         `OpenBlock
+           ( {
+               kind = `Mustache (`IdentPath [ `Ident "a" ]);
+               expr = `IdentPath [ `Ident "a" ];
+               content = [ `Substitution (`IdentPath [ `DotPath `OneDot ], []) ];
+               else_content = [];
+             },
+             [] );
        ])
 
 let%test "lexes inverted blocks" =
   make_test "{{^a}}{{ . }}{{/a}}"
     (Ok
        [
-         `OpenBlock (`IdentPath [ `Ident "a" ], [ `Inverted ]);
-         `Substitution (`IdentPath [ `DotPath `OneDot ], []);
-         `CloseBlock (`IdentPath [ `Ident "a" ], []);
+         `OpenBlock
+           ( {
+               kind = `Mustache (`IdentPath [ `Ident "a" ]);
+               expr = `IdentPath [ `Ident "a" ];
+               content = [];
+               else_content =
+                 [ `Substitution (`IdentPath [ `DotPath `OneDot ], []) ];
+             },
+             [] );
        ])
 
 let%test "lexes example 1 from handlebarsjs docs" =
@@ -672,19 +753,33 @@ let%test "lexes example 1 from handlebarsjs docs" =
     (Ok
        [
          `Raw (uchar_array_of_string "\n");
-         `OpenBlock (`With (`IdentPath [ `Ident "person" ]), []);
-         `Raw (uchar_array_of_string "\n");
-         `Substitution
-           ( `WhateverMakesSense
-               [ `App ("firstname", []); `IdentPath [ `Ident "firstname" ] ],
+         `OpenBlock
+           ( {
+               kind = `With;
+               expr = `IdentPath [ `Ident "person" ];
+               content =
+                 [
+                   `Raw (uchar_array_of_string "\n");
+                   `Substitution
+                     ( `WhateverMakesSense
+                         [
+                           `App ("firstname", []);
+                           `IdentPath [ `Ident "firstname" ];
+                         ],
+                       [] );
+                   `Raw (uchar_array_of_string " ");
+                   `Substitution
+                     ( `WhateverMakesSense
+                         [
+                           `App ("lastname", []);
+                           `IdentPath [ `Ident "lastname" ];
+                         ],
+                       [] );
+                   `Raw (uchar_array_of_string "\n");
+                 ];
+               else_content = [];
+             },
              [] );
-         `Raw (uchar_array_of_string " ");
-         `Substitution
-           ( `WhateverMakesSense
-               [ `App ("lastname", []); `IdentPath [ `Ident "lastname" ] ],
-             [] );
-         `Raw (uchar_array_of_string "\n");
-         `CloseBlock (`With, []);
          `Raw (uchar_array_of_string "\n");
        ])
 
@@ -702,26 +797,32 @@ let%test "lexes JSON object" =
        [
          `Raw (uchar_array_of_string "\n");
          `OpenBlock
-           ( `With
-               (`Literal
-                  (`Assoc
-                     [
-                       ("name", `String "John");
-                       ("age", `Int 30);
-                       ("isEmployed", `Bool true);
-                       ( "skills",
-                         `List
-                           [
-                             `String "JavaScript";
-                             `String "Python";
-                             `String "OCaml";
-                           ] );
-                     ])),
+           ( {
+               kind = `With;
+               expr =
+                 `Literal
+                   (`Assoc
+                      [
+                        ("name", `String "John");
+                        ("age", `Int 30);
+                        ("isEmployed", `Bool true);
+                        ( "skills",
+                          `List
+                            [
+                              `String "JavaScript";
+                              `String "Python";
+                              `String "OCaml";
+                            ] );
+                      ]);
+               content =
+                 [
+                   `Substitution
+                     ( `WhateverMakesSense
+                         [ `App ("name", []); `IdentPath [ `Ident "name" ] ],
+                       [] );
+                 ];
+               else_content = [];
+             },
              [] );
-         `Substitution
-           ( `WhateverMakesSense
-               [ `App ("name", []); `IdentPath [ `Ident "name" ] ],
-             [] );
-         `CloseBlock (`With, []);
          `Raw (uchar_array_of_string "\n");
        ])

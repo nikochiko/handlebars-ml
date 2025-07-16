@@ -23,26 +23,26 @@ type evalable =
 type blockattr = [ `StripBefore | `StripAfter | `Unescaped | `Inverted ]
 [@@deriving show]
 
-(* handlebarsjs supports function applications too here,
-   but the semantics of it scare me very much.
-   choosing not to support them for anyone's sanity. *)
-type open_block_kind =
-  [ `If of evalable
-  | `Unless of evalable
-  | `Each of evalable
-  | `With of evalable
-  | ident_path ]
-[@@deriving show]
-
-type close_block = [ `If | `Unless | `Each | `With | ident_path ]
+type block_kind = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
 [@@deriving show, eq]
 
-type token =
+type open_block = {
+  kind : block_kind;
+  expr : evalable;
+  content : token list;
+  else_content : token list;
+}
+
+and close_block = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
+[@@deriving show, eq]
+
+and token =
   [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
   | `Substitution of evalable * blockattr list
-  | `OpenBlock of open_block_kind * blockattr list
+  | `OpenBlock of open_block * blockattr list
   | `Else of blockattr list
   | `CloseBlock of close_block * blockattr list
+  | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show]
 
@@ -52,3 +52,6 @@ val pp_lex_error : Format.formatter -> lex_error -> unit
 val show_lex_error : lex_error -> string
 
 type lex_result = (token list, lex_error) result [@@deriving show]
+
+val uchar_array_of_string : string -> Uchar.t array
+val string_of_uchar_array : Uchar.t array -> string
