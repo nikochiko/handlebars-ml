@@ -26,7 +26,7 @@ type blockattr = [ `StripBefore | `StripAfter | `Unescaped | `Inverted ]
 type block_kind = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
 [@@deriving show, eq]
 
-type open_block = {
+type block = {
   kind : block_kind;
   expr : evalable;
   content : token list;
@@ -36,7 +36,7 @@ type open_block = {
 and token =
   [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
   | `Substitution of evalable * blockattr list
-  | `OpenBlock of open_block * blockattr list
+  | `Block of block
   | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show]

@@ -81,8 +81,8 @@ let ( let* ) = ( >>= )
 
 type container =
   | Root of token list
-  | Child of { parent : container; block : open_block }
-  | ElseChild of { parent : container; block : open_block }
+  | Child of { parent : container; block : block }
+  | ElseChild of { parent : container; block : block }
 
 let add_token container tok =
   match container with
@@ -100,7 +100,7 @@ let mature_child container =
   match container with
   | Root _ -> failwith "cannot mature root container"
   | Child { parent; block } | ElseChild { parent; block } ->
-      add_token parent (`OpenBlock (block, []))
+      add_token parent (`Block block)
 
 let mk_child parent kind expr =
   let block = { kind; expr; content = []; else_content = [] } in
@@ -676,14 +676,13 @@ let%test "lexes else block" =
     (Ok
        [
          `Raw (uchar_array_of_string "hello, ");
-         `OpenBlock
-           ( {
-               kind = `If;
-               expr = `IdentPath [ `Ident "a" ];
-               content = [ `Raw (uchar_array_of_string "yes") ];
-               else_content = [ `Raw (uchar_array_of_string "no") ];
-             },
-             [] );
+         `Block
+           {
+             kind = `If;
+             expr = `IdentPath [ `Ident "a" ];
+             content = [ `Raw (uchar_array_of_string "yes") ];
+             else_content = [ `Raw (uchar_array_of_string "no") ];
+           };
        ])
 
 let%test "lexes else looking things as something else" =
@@ -714,29 +713,27 @@ let%test "lexes mustache-style open & close blocks" =
   make_test "{{#a}}{{ . }}{{/a}}"
     (Ok
        [
-         `OpenBlock
-           ( {
-               kind = `Mustache (`IdentPath [ `Ident "a" ]);
-               expr = `IdentPath [ `Ident "a" ];
-               content = [ `Substitution (`IdentPath [ `DotPath `OneDot ], []) ];
-               else_content = [];
-             },
-             [] );
+         `Block
+           {
+             kind = `Mustache (`IdentPath [ `Ident "a" ]);
+             expr = `IdentPath [ `Ident "a" ];
+             content = [ `Substitution (`IdentPath [ `DotPath `OneDot ], []) ];
+             else_content = [];
+           };
        ])
 
 let%test "lexes inverted blocks" =
   make_test "{{^a}}{{ . }}{{/a}}"
     (Ok
        [
-         `OpenBlock
-           ( {
-               kind = `Mustache (`IdentPath [ `Ident "a" ]);
-               expr = `IdentPath [ `Ident "a" ];
-               content = [];
-               else_content =
-                 [ `Substitution (`IdentPath [ `DotPath `OneDot ], []) ];
-             },
-             [] );
+         `Block
+           {
+             kind = `Mustache (`IdentPath [ `Ident "a" ]);
+             expr = `IdentPath [ `Ident "a" ];
+             content = [];
+             else_content =
+               [ `Substitution (`IdentPath [ `DotPath `OneDot ], []) ];
+           };
        ])
 
 let%test "lexes example 1 from handlebarsjs docs" =
@@ -749,33 +746,31 @@ let%test "lexes example 1 from handlebarsjs docs" =
     (Ok
        [
          `Raw (uchar_array_of_string "\n");
-         `OpenBlock
-           ( {
-               kind = `With;
-               expr = `IdentPath [ `Ident "person" ];
-               content =
-                 [
-                   `Raw (uchar_array_of_string "\n");
-                   `Substitution
-                     ( `WhateverMakesSense
-                         [
-                           `App ("firstname", []);
-                           `IdentPath [ `Ident "firstname" ];
-                         ],
-                       [] );
-                   `Raw (uchar_array_of_string " ");
-                   `Substitution
-                     ( `WhateverMakesSense
-                         [
-                           `App ("lastname", []);
-                           `IdentPath [ `Ident "lastname" ];
-                         ],
-                       [] );
-                   `Raw (uchar_array_of_string "\n");
-                 ];
-               else_content = [];
-             },
-             [] );
+         `Block
+           {
+             kind = `With;
+             expr = `IdentPath [ `Ident "person" ];
+             content =
+               [
+                 `Raw (uchar_array_of_string "\n");
+                 `Substitution
+                   ( `WhateverMakesSense
+                       [
+                         `App ("firstname", []);
+                         `IdentPath [ `Ident "firstname" ];
+                       ],
+                     [] );
+                 `Raw (uchar_array_of_string " ");
+                 `Substitution
+                   ( `WhateverMakesSense
+                       [
+                         `App ("lastname", []); `IdentPath [ `Ident "lastname" ];
+                       ],
+                     [] );
+                 `Raw (uchar_array_of_string "\n");
+               ];
+             else_content = [];
+           };
          `Raw (uchar_array_of_string "\n");
        ])
 
@@ -792,33 +787,32 @@ let%test "lexes JSON object" =
     (Ok
        [
          `Raw (uchar_array_of_string "\n");
-         `OpenBlock
-           ( {
-               kind = `With;
-               expr =
-                 `Literal
-                   (`Assoc
-                      [
-                        ("name", `String "John");
-                        ("age", `Int 30);
-                        ("isEmployed", `Bool true);
-                        ( "skills",
-                          `List
-                            [
-                              `String "JavaScript";
-                              `String "Python";
-                              `String "OCaml";
-                            ] );
-                      ]);
-               content =
-                 [
-                   `Substitution
-                     ( `WhateverMakesSense
-                         [ `App ("name", []); `IdentPath [ `Ident "name" ] ],
-                       [] );
-                 ];
-               else_content = [];
-             },
-             [] );
+         `Block
+           {
+             kind = `With;
+             expr =
+               `Literal
+                 (`Assoc
+                    [
+                      ("name", `String "John");
+                      ("age", `Int 30);
+                      ("isEmployed", `Bool true);
+                      ( "skills",
+                        `List
+                          [
+                            `String "JavaScript";
+                            `String "Python";
+                            `String "OCaml";
+                          ] );
+                    ]);
+             content =
+               [
+                 `Substitution
+                   ( `WhateverMakesSense
+                       [ `App ("name", []); `IdentPath [ `Ident "name" ] ],
+                     [] );
+               ];
+             else_content = [];
+           };
          `Raw (uchar_array_of_string "\n");
        ])

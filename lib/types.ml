@@ -50,7 +50,7 @@ type blockattr = [ `StripBefore | `StripAfter | `Unescaped | `Inverted ]
 (* handlebarsjs supports function applications too here,
    but the semantics of it scare me very much.
    choosing not to support them for anyone's sanity. *)
-type open_block = {
+type block = {
   kind : block_kind;
   expr : evalable;
   content : token list;
@@ -60,7 +60,7 @@ type open_block = {
 and token =
   [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
   | `Substitution of evalable * blockattr list
-  | `OpenBlock of open_block * blockattr list
+  | `Block of block
   | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show, eq]
