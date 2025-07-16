@@ -44,9 +44,6 @@ type evalable =
 type block_kind = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
 [@@deriving show, eq]
 
-type blockattr = [ `StripBefore | `StripAfter | `Unescaped | `Inverted ]
-[@@deriving show, eq]
-
 (* handlebarsjs supports function applications too here,
    but the semantics of it scare me very much.
    choosing not to support them for anyone's sanity. *)
@@ -59,7 +56,8 @@ type block = {
 
 and token =
   [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
-  | `Substitution of evalable * blockattr list
+  | `Escaped of evalable
+  | `Unescaped of evalable
   | `Block of block
   | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
