@@ -1,11 +1,16 @@
 open Types
 
-type handlebars_error = LexError of lex_error | CompileError of string
+type compile_error = Not_found | Missing_helper of string [@@deriving show]
+type compile_result = (string, compile_error) result
+
+type hb_error = LexError of lex_error | CompileError of compile_error
 [@@deriving show]
 
-type hb_result = (string, handlebars_error) result [@@deriving show]
+type hb_result = (string, hb_error) result [@@deriving show]
+type helper = literal list -> literal option
+type get_helper = string -> helper option
 
-let ( >>= ) = Option.bind
+let ( >>= ) = Result.bind
 let ( let* ) = ( >>= )
 
 let is_space c =
@@ -50,32 +55,32 @@ let escape_html s =
     s;
   Buffer.contents b
 
-let rec is_truthy kind (lit : literal option) : bool =
+let rec is_truthy kind lit : bool =
   match kind with
   | `Each -> (
       match lit with
-      | Some (`List lst) -> not (List.is_empty lst)
-      | Some (`Assoc lst) -> not (List.is_empty lst)
+      | `List lst -> not (List.is_empty lst)
+      | `Assoc lst -> not (List.is_empty lst)
       | _ -> false)
   | `Unless -> not (is_truthy `If lit)
   | `If | `With | `Mustache _ -> (
       match lit with
-      | None
-      | Some `Null
-      | Some (`String "")
-      | Some (`Int 0)
-      | Some (`Float 0.0)
-      | Some (`Bool false)
-      | Some (`List [])
-      | Some (`Assoc []) ->
+      | `Null
+      | `String ""
+      | `Int 0
+      | `Float 0.0
+      | `Bool false
+      | `List []
+      | `Assoc [] ->
           false
       | _ -> true)
 
 type context =
-  | Root of { v : Yojson.Basic.t }
-  | Child of { v : Yojson.Basic.t; parent : context }
+  | Root of { v : literal }
+  | Child of { v : literal; parent : context }
 
-let lookup ctx segments : Yojson.Basic.t option =
+let lookup ctx segments : literal option =
+  let ( let* ) = Option.bind in
   let rec aux ctx segments =
     let v = match ctx with Root { v } -> v | Child { v; _ } -> v in
     match segments with
@@ -84,8 +89,7 @@ let lookup ctx segments : Yojson.Basic.t option =
         let* next_v =
           match v with `Assoc lst -> List.assoc_opt name lst | _ -> None
         in
-        let new_ctx = Child { v = next_v; parent = ctx } in
-        aux new_ctx rest
+        aux (Child { v = next_v; parent = ctx }) rest
     | `Index (`Int idx) :: rest when idx >= 0 ->
         let* next_v =
           match v with `List lst -> List.nth_opt lst idx | _ -> None
@@ -101,21 +105,43 @@ let lookup ctx segments : Yojson.Basic.t option =
   in
   aux ctx segments
 
-let rec eval ctx (expr : evalable) : Yojson.Basic.t option =
-  match expr with
-  | `Literal lit -> Some lit
-  | `App _ -> None (* not implemented *)
-  | `IdentPath segments -> lookup ctx segments
-  | `WhateverMakesSense exprs -> List.to_seq exprs |> Seq.find_map (eval ctx)
+let rec eval ctx get_helper (expr : evalable) : (literal, compile_error) result
+    =
+  let rec aux ctx get_helper expr =
+    match expr with
+    | `Literal lit -> Ok lit
+    | `App (name, args) -> (
+        match get_helper name with
+        | None -> Error (Missing_helper name)
+        | Some helper -> (
+            let* arg_values =
+              List.fold_left
+                (fun acc arg ->
+                  let* lst = acc in
+                  let* v = eval ctx get_helper arg in
+                  Ok (v :: lst))
+                (Ok []) args
+            in
+            match helper arg_values with Some v -> Ok v | None -> Ok `Null))
+    | `IdentPath segments -> (
+        let v = lookup ctx segments in
+        match v with Some v -> Ok v | None -> Error Not_found)
+    | `WhateverMakesSense exprs ->
+        let make_sense acc expr =
+          match acc with Error _ -> aux ctx get_helper expr | _ -> acc
+        in
+        List.fold_left make_sense (Error Not_found) exprs
+  in
+  match aux ctx get_helper expr with Error Not_found -> Ok `Null | a -> a
 
 let make_ctx ?parent_ctx v =
   match parent_ctx with
   | None -> Root { v }
   | Some ctx -> Child { v; parent = ctx }
 
-let compile_tokens (tokens : token list) values =
+let compile_tokens get_helper tokens values =
   let ( let* ) = Result.bind in
-  let rec aux acc ctx (tokens : token list) =
+  let rec aux acc ctx tokens =
     match tokens with
     | [] -> Ok (List.rev acc |> String.concat "")
     | `Comment _ :: rest -> aux acc ctx rest
@@ -129,40 +155,34 @@ let compile_tokens (tokens : token list) values =
     | `Raw s :: rest ->
         let raw_str = string_of_uchar_array s in
         aux (raw_str :: acc) ctx rest
-    | `Escaped expr :: rest -> (
-        match eval ctx expr with
-        | None -> aux acc ctx rest
-        | Some value ->
-            let escaped_str = string_of_literal value |> escape_html in
-            aux (escaped_str :: acc) ctx rest)
-    | `Unescaped expr :: rest -> (
-        match eval ctx expr with
-        | None -> aux acc ctx rest
-        | Some value ->
-            let unescaped_str = string_of_literal value in
-            aux (unescaped_str :: acc) ctx rest)
+    | `Escaped expr :: rest ->
+        let* value = eval ctx get_helper expr in
+        let escaped_str = string_of_literal value |> escape_html in
+        aux (escaped_str :: acc) ctx rest
+    | `Unescaped expr :: rest ->
+        let* value = eval ctx get_helper expr in
+        let unescaped_str = string_of_literal value in
+        aux (unescaped_str :: acc) ctx rest
     | `Block { kind; expr; content; else_content } :: rest ->
-        let evaluated = eval ctx expr in
-        let is_truthy = is_truthy kind evaluated in
+        let* value = eval ctx get_helper expr in
+        let is_truthy = is_truthy kind value in
         let ctx =
-          match (evaluated, kind) with
-          | (Some v, `With | Some v, `Mustache _) when is_truthy ->
+          match (value, kind) with
+          | (v, `With | v, `Mustache _) when is_truthy ->
               make_ctx ~parent_ctx:ctx v
           | _ -> ctx
         in
         let sub_compiler =
           match kind with
           | (`With | `Mustache _) when is_truthy ->
-              let v = Option.get evaluated in
-              let ctx = make_ctx ~parent_ctx:ctx v in
+              let ctx = make_ctx ~parent_ctx:ctx value in
               aux [] ctx
           | `Each when is_truthy ->
-              let v = Option.get evaluated in
               let iterable_values =
-                match v with
+                match value with
                 | `List lst -> lst
                 | `Assoc lst -> List.map snd lst
-                | _ -> failwith "Expected a list or assoc for `Each block"
+                | _ -> assert false (* is_truthy guarantees a list or assoc *)
               in
               let compile_for_each v content =
                 let ctx = make_ctx ~parent_ctx:ctx v in
@@ -189,15 +209,20 @@ let compile_tokens (tokens : token list) values =
   in
   aux [] (make_ctx values) tokens
 
-let compile template values =
+let compile (get_helper : get_helper) (template : string) (values : literal) :
+    hb_result =
   let lexbuf = uchar_array_of_string template |> Sedlexing.from_uchar_array in
   let result = Lexer.lex lexbuf in
   match result with
   | Error e -> Error (LexError e)
-  | Ok tokens -> compile_tokens tokens values
+  | Ok tokens -> (
+      match compile_tokens get_helper tokens values with
+      | Error e -> Error (CompileError e)
+      | Ok v -> Ok v)
 
 let make_test template values expected =
-  let result = compile template values in
+  let get_helper _ = None in
+  let result = compile get_helper template values in
   match result = expected with
   | true -> true
   | false ->
