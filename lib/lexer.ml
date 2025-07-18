@@ -138,6 +138,7 @@ and lex_templ ~container buf : lex_result =
     | _ -> container
   in
   match%sedlex buf with
+  | eof -> Error (mkerr "unexpected end of input" buf)
   | Star white_space, "else", Star white_space, Opt '~', templ_close -> (
       match container with
       | Root _ -> Error (mkerr "unexpected 'else' without an open block" buf)
@@ -152,20 +153,6 @@ and lex_templ ~container buf : lex_result =
   | '!' ->
       let* comment, buf = lex_in_comment buf in
       let container = add_token container (`Comment comment) in
-      lex ~container buf
-  | '{' ->
-      let lex_stop buf =
-        match%sedlex buf with
-        | Star white_space, '}' -> Ok (false, buf)
-        | _ -> Error (mkerr "expected closing brace" buf)
-      in
-      let* (_, evalable), buf = lex_eval_or_apply lex_stop buf in
-      let* strip_after, buf = lex_templ_close buf in
-      let container = add_token container (`Unescaped evalable) in
-      let container =
-        if strip_after then add_token container `WhitespaceControl
-        else container
-      in
       lex ~container buf
   | '#' ->
       let* (strip_after, block), buf = lex_open_block lex_templ_close buf in
@@ -206,10 +193,25 @@ and lex_templ ~container buf : lex_result =
               (string_of_block_kind block.kind)
           in
           Error (mkerr msg buf))
-  | eof -> Error (mkerr "unexpected end of input" buf)
+  | '{' ->
+      let lex_stop buf =
+        match%sedlex buf with
+        | Star white_space, '}' -> Ok (false, buf)
+        | _ -> Error (mkerr "expected closing brace" buf)
+      in
+      let* (_, evalable), buf =
+        lex_eval_or_apply ~lex_literal_as_ident:true lex_stop buf
+      in
+      let* strip_after, buf = lex_templ_close buf in
+      let container = add_token container (`Unescaped evalable) in
+      let container =
+        if strip_after then add_token container `WhitespaceControl
+        else container
+      in
+      lex ~container buf
   | _ ->
       let* (strip_after, evalable), buf =
-        lex_eval_or_apply lex_templ_close buf
+        lex_eval_or_apply ~lex_literal_as_ident:true lex_templ_close buf
       in
       let container = add_token container (`Escaped evalable) in
       let container =
@@ -299,9 +301,18 @@ and lex_in_comment buf =
   in
   aux [||] buf
 
-and lex_eval_or_apply (lex_stop : lexbuf -> 'a partial_lex_result) buf :
+and lex_eval_or_apply ?(lex_literal_as_ident = false)
+    (lex_stop : lexbuf -> 'a partial_lex_result) buf :
     ('a * evalable) partial_lex_result =
   let* evalable, buf = lex_eval buf in
+  let evalable =
+    match evalable with
+    | `Literal (`String s) when lex_literal_as_ident ->
+        `IdentPath [ `Index (`String s) ]
+    | `Literal (`Int i) when lex_literal_as_ident ->
+        `IdentPath [ `Index (`Int i) ]
+    | _ -> evalable
+  in
   match evalable with
   | `IdentPath [ `Ident name ] ->
       (* e.g. {{ f }} could refer to the fn call f or the substitution variable f *)
@@ -799,4 +810,34 @@ let%test "lexes JSON object" =
              else_content = [];
            };
          `Raw (uchar_array_of_string "\n");
+       ])
+
+let%test "lexes literal string as key for substitution" =
+  make_test {| {{#with obj}}{{ "key" }}{{/with}} |}
+    (Ok
+       [
+         `Raw (uchar_array_of_string " ");
+         `Block
+           {
+             kind = `With;
+             expr = `IdentPath [ `Ident "obj" ];
+             content = [ `Escaped (`IdentPath [ `Index (`String "key") ]) ];
+             else_content = [];
+           };
+         `Raw (uchar_array_of_string " ");
+       ])
+
+let%test "lexes literal int as index for substitution" =
+  make_test {| {{#with arr}}{{ 0 }}{{/with}} |}
+    (Ok
+       [
+         `Raw (uchar_array_of_string " ");
+         `Block
+           {
+             kind = `With;
+             expr = `IdentPath [ `Ident "arr" ];
+             content = [ `Escaped (`IdentPath [ `Index (`Int 0) ]) ];
+             else_content = [];
+           };
+         `Raw (uchar_array_of_string " ");
        ])
