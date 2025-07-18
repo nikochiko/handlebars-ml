@@ -102,15 +102,15 @@ let mature_child container =
   | Child { parent; block } | ElseChild { parent; block } ->
       add_token parent (`Block block)
 
-let mk_child parent kind expr =
-  let block = { kind; expr; content = []; else_content = [] } in
-  Child { parent; block }
-
 let invert_child child =
   match child with
   | Root _ -> failwith "cannot invert root container"
   | Child { parent; block } -> ElseChild { parent; block }
   | ElseChild { parent; block } -> Child { parent; block }
+
+let mk_child parent kind expr =
+  let block = { kind; expr; content = []; else_content = [] } in
+  Child { parent; block }
 
 let rec lex ?(container = Root []) buf : lex_result =
   match%sedlex buf with
