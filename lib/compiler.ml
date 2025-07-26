@@ -209,8 +209,32 @@ let compile_tokens get_helper tokens values =
   in
   aux [] (make_ctx values) tokens
 
-let compile (get_helper : get_helper) (template : string) (values : literal) :
-    hb_result =
+let default_get_helper name =
+  match name with
+  | "upper" ->
+      Some
+        (fun args ->
+          match args with
+          | [ `String s ] -> Some (`String (String.uppercase_ascii s))
+          | _ -> None)
+  | "lower" ->
+      Some
+        (fun args ->
+          match args with
+          | [ `String s ] -> Some (`String (String.lowercase_ascii s))
+          | _ -> None)
+  | "length" ->
+      Some
+        (fun args ->
+          match args with
+          | [ `String s ] -> Some (`Int (String.length s))
+          | [ `List lst ] -> Some (`Int (List.length lst))
+          | [ `Assoc lst ] -> Some (`Int (List.length lst))
+          | _ -> None)
+  | _ -> None
+
+let compile ?(get_helper : get_helper = default_get_helper) (template : string)
+    (values : literal) : hb_result =
   let lexbuf = uchar_array_of_string template |> Sedlexing.from_uchar_array in
   let result = Lexer.lex lexbuf in
   match result with
@@ -220,9 +244,10 @@ let compile (get_helper : get_helper) (template : string) (values : literal) :
       | Error e -> Error (CompileError e)
       | Ok v -> Ok v)
 
-let make_test template values expected =
-  let get_helper _ = None in
-  let result = compile get_helper template values in
+(* ---- tests ----- *)
+
+let make_test ?(get_helper = default_get_helper) template values expected =
+  let result = compile ~get_helper template values in
   match result = expected with
   | true -> true
   | false ->
@@ -268,3 +293,42 @@ let%test "compile template with nested context" =
       ]
   in
   make_test template values (Ok "Name: Alice, Age: 30")
+
+let%test "compile template with helper function applied" =
+  let template = "{{upper name}}" in
+  let values = `Assoc [ ("name", `String "hello") ] in
+  let expected = Ok "HELLO" in
+  make_test template values expected
+
+let%test "compile template with missing helper" =
+  let template = "{{missing_helper name}}" in
+  let values = `Assoc [ ("name", `String "test") ] in
+  let expected = Error (CompileError (Missing_helper "missing_helper")) in
+  make_test template values expected
+
+let%test "compile template with non-existing variable" =
+  let template = "{{non_existing}}" in
+  let values = `Assoc [] in
+  let expected = Ok "" in
+  make_test template values expected
+
+let%test "compile template when name refers to both helper & variable" =
+  let template = "{{ambiguous}}" in
+  let get_helper = function
+    | "ambiguous" -> Some (fun _ -> Some (`String "helper_value"))
+    | _ -> None
+  in
+  let values = `Assoc [ ("ambiguous", `String "variable_value") ] in
+  let expected = Ok "helper_value" in
+  make_test ~get_helper template values expected
+
+let%test
+    "compile template when name refers to both helper & variable but dot-path" =
+  let template = "{{./ambiguous}}" in
+  let get_helper = function
+    | "ambiguous" -> Some (fun _ -> Some (`String "helper_value"))
+    | _ -> None
+  in
+  let values = `Assoc [ ("ambiguous", `String "variable_value") ] in
+  let expected = Ok "variable_value" in
+  make_test ~get_helper template values expected
