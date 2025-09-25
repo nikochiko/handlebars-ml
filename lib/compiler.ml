@@ -248,11 +248,19 @@ let default_get_helper name =
     let s = printables |> List.map string_of_literal |> String.concat "" in
     Some (`String s)
   in
+  let removeProtocol = function
+    | [ `String url ] ->
+        let re = Str.regexp "^https?://" in
+        let stripped = Str.replace_first re "" url in
+        Some (`String stripped)
+    | _ -> None
+  in
   match name with
   | "upper" -> Some upper
   | "lower" -> Some lower
   | "length" -> Some length
   | "concat" -> Some concat
+  | "removeProtocol" -> Some removeProtocol
   | _ -> None
 
 let default_get_partial _name = None
