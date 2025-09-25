@@ -1,1 +1,151 @@
-let () = print_endline "Hello, World!"
+open Handlebars_ml.Compiler
+
+type input_source =
+  | Stdin
+  | File of string
+
+type config = {
+  template_source : input_source;
+  data_source : input_source;
+  inline_json : string option;
+}
+
+let version = "0.1.0"
+
+let usage_msg =
+  "handlebars-ml [OPTIONS] [TEMPLATE_FILE]\n\n" ^
+  "Compile handlebars templates with JSON data.\n\n" ^
+  "Examples:\n" ^
+  "  echo '{\"name\":\"World\"}' | handlebars-ml template.hbs\n" ^
+  "  handlebars-ml -d data.json template.hbs\n" ^
+  "  handlebars-ml -j '{\"name\":\"Alice\"}' <<< 'Hello {{name}}!'\n"
+
+let help_msg = usage_msg ^ "\nOptions:\n" ^
+  "  -d, --data FILE     JSON data file (default: stdin)\n" ^
+  "  -j, --json STRING   Inline JSON data\n" ^
+  "  -h, --help          Show this help\n" ^
+  "  -v, --version       Show version\n"
+
+let read_file filename =
+  try
+    let ic = open_in filename in
+    let content = really_input_string ic (in_channel_length ic) in
+    close_in ic;
+    Ok content
+  with
+  | Sys_error msg -> Error msg
+
+let read_stdin () =
+  try
+    let buffer = Buffer.create 4096 in
+    let rec read_loop () =
+      try
+        let line = input_line stdin in
+        Buffer.add_string buffer line;
+        Buffer.add_char buffer '\n';
+        read_loop ()
+      with
+      | End_of_file -> ()
+    in
+    read_loop ();
+    Ok (Buffer.contents buffer)
+  with
+  | Sys_error msg -> Error msg
+
+let read_input source =
+  match source with
+  | Stdin -> read_stdin ()
+  | File filename -> read_file filename
+
+let parse_json json_str =
+  try
+    Ok (Yojson.Basic.from_string json_str)
+  with
+  | Yojson.Json_error msg -> Error ("JSON parse error: " ^ msg)
+
+let yojson_to_literal_or_collection json =
+  let rec convert = function
+    | `Null -> `Null
+    | `Bool b -> `Bool b
+    | `Int i -> `Int i
+    | `Float f -> `Float f
+    | `String s -> `String s
+    | `List lst -> `List (List.map convert lst)
+    | `Assoc lst -> `Assoc (List.map (fun (k, v) -> (k, convert v)) lst)
+  in
+  convert json
+
+let error_and_exit msg code =
+  Printf.eprintf "Error: %s\n" msg;
+  exit code
+
+let parse_args () =
+  let config = ref { template_source = Stdin; data_source = Stdin; inline_json = None } in
+  let template_file = ref None in
+  let set_template_file file = template_file := Some file in
+
+  let rec parse_args_rec = function
+    | [] -> ()
+    | "-h" :: _ | "--help" :: _ ->
+        print_string help_msg;
+        exit 0
+    | "-v" :: _ | "--version" :: _ ->
+        Printf.printf "handlebars-ml %s\n" version;
+        exit 0
+    | "-d" :: file :: rest | "--data" :: file :: rest ->
+        config := { !config with data_source = File file };
+        parse_args_rec rest
+    | "-j" :: json :: rest | "--json" :: json :: rest ->
+        config := { !config with inline_json = Some json };
+        parse_args_rec rest
+    | file :: rest when not (String.starts_with ~prefix:"-" file) ->
+        set_template_file file;
+        parse_args_rec rest
+    | unknown :: _ ->
+        error_and_exit ("Unknown option: " ^ unknown) 1
+  in
+
+  parse_args_rec (List.tl (Array.to_list Sys.argv));
+
+  (* Set template source based on whether file was provided *)
+  let final_config = match !template_file with
+    | Some file -> { !config with template_source = File file }
+    | None -> !config
+  in
+  final_config
+
+let main () =
+  let config = parse_args () in
+
+  (* Read template *)
+  let template = match read_input config.template_source with
+    | Ok content -> content
+    | Error msg -> error_and_exit ("Failed to read template: " ^ msg) 2
+  in
+
+  (* Get JSON data *)
+  let json_data = match config.inline_json with
+    | Some json -> json
+    | None ->
+        match read_input config.data_source with
+        | Ok content -> content
+        | Error msg -> error_and_exit ("Failed to read data: " ^ msg) 2
+  in
+
+  (* Parse JSON *)
+  let data = match parse_json json_data with
+    | Ok json -> yojson_to_literal_or_collection json
+    | Error msg -> error_and_exit msg 3
+  in
+
+  (* Compile template *)
+  match compile template data with
+  | Ok result ->
+      print_string result;
+      exit 0
+  | Error (LexError err) ->
+      error_and_exit ("Lexer error: " ^ (Handlebars_ml.Types.show_lex_error err)) 4
+  | Error (CompileError err) ->
+      error_and_exit ("Compile error: " ^ (show_compile_error err)) 4
+
+let () = main ()

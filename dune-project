@@ -20,7 +20,8 @@
  (synopsis "Handlebars templating for OCaml")
  (description "A longer description")
  (depends ocaml
-          (sedlex (>= 3.6)))
+          (sedlex (>= 3.6))
+          yojson)
  (tags
   ("add topics" "to describe" your project)))
 
