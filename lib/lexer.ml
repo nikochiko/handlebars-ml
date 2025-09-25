@@ -9,7 +9,9 @@ let templ_open = [%sedlex.regexp? "{{"]
 let templ_close = [%sedlex.regexp? "}}"]
 let letters = [%sedlex.regexp? 'a' .. 'z' | 'A' .. 'Z']
 let digits = [%sedlex.regexp? '0' .. '9']
-let ident = [%sedlex.regexp? (letters | '_' | '@'), Star (letters | '_' | digits)]
+
+let ident =
+  [%sedlex.regexp? (letters | '_' | '@'), Star (letters | '_' | '-' | digits)]
 
 let start_of_literal =
   [%sedlex.regexp?
@@ -401,9 +403,9 @@ and lex_partial lex_stop buf : (bool * partial_info) partial_lex_result =
       (* Check if there's a context argument after the name *)
       let* (stop_result, context), buf =
         match%sedlex buf with
-        | white_space ->
+        | white_space -> (
             (* Try to parse context argument *)
-            (match lex_eval buf with
+            match lex_eval buf with
             | Ok (context_expr, buf') ->
                 let* stop_result, buf' = lex_stop buf' in
                 Ok ((stop_result, Some context_expr), buf')
@@ -818,5 +820,10 @@ let%test "lexes partial with context" =
   make_test "{{> greeting user}}"
     (Ok
        [
-         `Partial { name = "greeting"; context = Some (`IdentPath [`Ident "user"]) };
+         `Partial
+           { name = "greeting"; context = Some (`IdentPath [ `Ident "user" ]) };
        ])
+
+let%test "lexes parital name with hyphen" =
+  make_test "{{> my-partial}}"
+    (Ok [ `Partial { name = "my-partial"; context = None } ])
