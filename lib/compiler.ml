@@ -239,10 +239,20 @@ let default_get_helper name =
     | [ `Assoc lst ] -> Some (`Int (List.length lst))
     | _ -> None
   in
+  let concat args =
+    let printables =
+      List.filter
+        (function `Assoc _ | `List _ | `Null -> false | _ -> true)
+        args
+    in
+    let s = printables |> List.map string_of_literal |> String.concat "" in
+    Some (`String s)
+  in
   match name with
   | "upper" -> Some upper
   | "lower" -> Some lower
   | "length" -> Some length
+  | "concat" -> Some concat
   | _ -> None
 
 let default_get_partial _name = None
