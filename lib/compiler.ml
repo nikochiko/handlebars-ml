@@ -351,7 +351,7 @@ let compile_tokens get_helper get_partial tokens values =
         (* Parse and compile the partial template *)
         let lexbuf = uchar_array_of_string partial_template |> Sedlexing.from_uchar_array in
         match Lexer.lex lexbuf with
-        | Error e -> Error (Type_error ("Partial lexer error: " ^ show_lex_error e))
+        | Error e -> Error (Type_error ("Partial lexer error in '" ^ name ^ "': " ^ show_lex_error e))
         | Ok partial_tokens ->
             (* Recursively compile the partial tokens *)
             compile_token_list [] partial_ctx partial_tokens
