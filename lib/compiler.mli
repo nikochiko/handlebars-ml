@@ -31,7 +31,7 @@ type context_value =
 (** Template execution context with parent chain *)
 type context =
   | Root of { v : context_value } (** Root context *)
-  | Child of { v : context_value; parent : context } (** Child context with parent reference *)
+  | Child of { v : context_value; parent : context; root : context } (** Child context with parent and root reference *)
 
 (** Custom helper function type *)
 type custom_helper = literal_or_collection list -> literal_or_collection option

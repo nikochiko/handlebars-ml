@@ -9,7 +9,7 @@ let templ_open = [%sedlex.regexp? "{{"]
 let templ_close = [%sedlex.regexp? "}}"]
 let letters = [%sedlex.regexp? 'a' .. 'z' | 'A' .. 'Z']
 let digits = [%sedlex.regexp? '0' .. '9']
-let ident = [%sedlex.regexp? (letters | '_'), Star (letters | '_' | digits)]
+let ident = [%sedlex.regexp? (letters | '_' | '@'), Star (letters | '_' | digits)]
 
 let start_of_literal =
   [%sedlex.regexp?

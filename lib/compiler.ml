@@ -20,7 +20,7 @@ type context_value =
 
 type context =
   | Root of { v : context_value }
-  | Child of { v : context_value; parent : context }
+  | Child of { v : context_value; parent : context; root : context }
 
 type custom_helper = literal_or_collection list -> literal_or_collection option
 type custom_helper_lookup_fn = string -> custom_helper option
@@ -33,7 +33,8 @@ let ( let* ) = ( >>= )
 let make_ctx ?parent_ctx v =
   match parent_ctx with
   | None -> Root { v }
-  | Some ctx -> Child { v; parent = ctx }
+  | Some (Root _ as root_ctx) -> Child { v; parent = root_ctx; root = root_ctx }
+  | Some (Child { root; _ } as parent) -> Child { v; parent; root }
 
 let literal_or_collection_of_literal (lit : literal) : literal_or_collection =
   match lit with
@@ -104,11 +105,28 @@ let lookup ctx segments =
       | Simple v -> v
       | WithExtras { v; extras } -> (
           match segments with
-          | `Ident name :: _ when String.starts_with ~prefix:"@" name -> extras
+          | `Ident name :: _ when String.starts_with ~prefix:"@" name ->
+              (match name with
+              | "@root" ->
+                  (* Return root context value *)
+                  (match ctx with
+                  | Root { v = Simple root_v } -> root_v
+                  | Child { root = Root { v = Simple root_v }; _ } -> root_v
+                  | _ -> `Null)
+              | _ -> extras)
           | _ -> v)
     in
     match segments with
     | [] -> actual_v
+    | `Ident name :: rest when name = "@root" -> (
+        (* Handle @root.property access *)
+        let root_v = match ctx with
+          | Root { v = Simple root_v } -> root_v
+          | Child { root = Root { v = Simple root_v }; _ } -> root_v
+          | _ -> `Null
+        in
+        let root_ctx = Root { v = Simple root_v } in
+        aux root_ctx rest)
     | `Ident name :: rest -> (
         if name = "." then aux ctx rest
         else
@@ -116,7 +134,11 @@ let lookup ctx segments =
           | `Assoc lst -> (
               match List.assoc_opt name lst with
               | Some next_v ->
-                  aux (Child { v = Simple next_v; parent = ctx }) rest
+                  let new_parent = match ctx with
+                    | Root _ as root -> Child { v = Simple next_v; parent = root; root }
+                    | Child { root; _ } as parent -> Child { v = Simple next_v; parent; root }
+                  in
+                  aux new_parent rest
               | None -> `Null)
           | _ -> `Null)
     | `Index (`String name) :: rest -> (
@@ -124,7 +146,11 @@ let lookup ctx segments =
         | `Assoc lst -> (
             match List.assoc_opt name lst with
             | Some next_v ->
-                aux (Child { v = Simple next_v; parent = ctx }) rest
+                let new_parent = match ctx with
+                  | Root _ as root -> Child { v = Simple next_v; parent = root; root }
+                  | Child { root; _ } as parent -> Child { v = Simple next_v; parent; root }
+                in
+                aux new_parent rest
             | None -> `Null)
         | _ -> `Null)
     | `Index (`Int idx) :: rest when idx >= 0 -> (
@@ -132,7 +158,11 @@ let lookup ctx segments =
         | `List lst -> (
             match List.nth_opt lst idx with
             | Some next_v ->
-                aux (Child { v = Simple next_v; parent = ctx }) rest
+                let new_parent = match ctx with
+                  | Root _ as root -> Child { v = Simple next_v; parent = root; root }
+                  | Child { root; _ } as parent -> Child { v = Simple next_v; parent; root }
+                in
+                aux new_parent rest
             | None -> `Null)
         | _ -> `Null)
     | `DotPath `OneDot :: rest -> aux ctx rest
@@ -540,6 +570,8 @@ let%test "partial recursion should be prevented" =
   let template_missing = "{{> missing}}" in
   make_test ~get_partial template_missing values (Error (CompileError (Missing_partial "missing")))
 
+(* Phase 2: Partial context tests *)
+
 let%test "partial with explicit context should work" =
   (* Test: {{> partial context}} passes specific context *)
   let template = "{{> greeting user}}" in
@@ -583,3 +615,42 @@ let%test "partial context should not affect parent context" =
   in
   let values = `Assoc [ ("name", `String "Main"); ("user", `Assoc [("name", `String "Partial")]) ] in
   make_test ~get_partial template values (Ok "Main Hi Partial! Main")
+
+(* @root context tests *)
+
+let%test "@root should reference initial context" =
+  (* Test: @root always refers to the original context *)
+  let template = "{{name}} {{#with user}}{{name}} {{@root.name}}{{/with}}" in
+  let values = `Assoc [ ("name", `String "Root"); ("user", `Assoc [("name", `String "User")]) ] in
+  make_test template values (Ok "Root User Root")
+
+let%test "@root should work in each blocks" =
+  (* Test: @root works inside iteration *)
+  let template = "{{#each items}}{{.}} - {{@root.title}} {{/each}}" in
+  let values = `Assoc [ ("title", `String "List"); ("items", `List [`String "A"; `String "B"; `String "C"]) ] in
+  make_test template values (Ok "A - List B - List C - List ")
+
+let%test "@root should work in partials" =
+  (* Test: @root accessible from partials *)
+  let template = "{{> item_card item}}" in
+  let get_partial name =
+    match name with
+    | "item_card" -> Some "{{name}} (from {{@root.source}})"
+    | _ -> None
+  in
+  let values = `Assoc [ ("source", `String "API"); ("item", `Assoc [("name", `String "Widget")]) ] in
+  make_test ~get_partial template values (Ok "Widget (from API)")
+
+let%test "@root should work with nested contexts" =
+  (* Test: @root works with deep nesting *)
+  let template = "{{#with company}}{{#each departments}}{{name}}: {{@root.company_name}} {{/each}}{{/with}}" in
+  let values = `Assoc [
+    ("company_name", `String "Acme Corp");
+    ("company", `Assoc [
+      ("departments", `List [
+        `Assoc [("name", `String "Engineering")];
+        `Assoc [("name", `String "Sales")]
+      ])
+    ])
+  ] in
+  make_test template values (Ok "Engineering: Acme Corp Sales: Acme Corp ")
