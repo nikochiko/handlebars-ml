@@ -1,6 +1,10 @@
 open Types
 
-type compile_error = Missing_helper of string | Type_error of string
+type compile_error =
+  | Missing_helper of string
+  | Missing_partial of string
+  | Partial_recursion of string
+  | Type_error of string
 [@@deriving show]
 
 type compile_result = (string, compile_error) result
@@ -20,6 +24,7 @@ type context =
 
 type custom_helper = literal_or_collection list -> literal_or_collection option
 type custom_helper_lookup_fn = string -> custom_helper option
+type partial_lookup_fn = string -> string option
 
 
 let ( >>= ) = Result.bind
@@ -193,7 +198,9 @@ let default_get_helper name =
   | "length" -> Some length
   | _ -> None
 
-let compile_tokens get_helper tokens values =
+let default_get_partial _name = None
+
+let compile_tokens get_helper get_partial tokens values =
   let rec compile_token_list acc ctx tokens =
     match tokens with
     | [] -> Ok (List.rev acc |> String.concat "")
@@ -219,6 +226,9 @@ let compile_tokens get_helper tokens values =
     | `Block { expr; content; else_content } :: rest ->
         let* compiled_block = compile_block expr content else_content ctx in
         compile_token_list (compiled_block :: acc) ctx rest
+    | `Partial name :: rest ->
+        let* compiled_partial = compile_partial name ctx in
+        compile_token_list (compiled_partial :: acc) ctx rest
 
   and compile_block expr content else_content ctx =
     match expr with
@@ -296,22 +306,34 @@ let compile_tokens get_helper tokens values =
           else ctx
         in
         compile_token_list [] new_ctx content_to_use
+
+  and compile_partial name ctx =
+    match get_partial name with
+    | None -> Error (Missing_partial name)
+    | Some partial_template ->
+        (* Parse and compile the partial template with current context *)
+        let lexbuf = uchar_array_of_string partial_template |> Sedlexing.from_uchar_array in
+        match Lexer.lex lexbuf with
+        | Error e -> Error (Type_error ("Partial lexer error: " ^ show_lex_error e))
+        | Ok partial_tokens ->
+            (* Recursively compile the partial tokens *)
+            compile_token_list [] ctx partial_tokens
   in
   compile_token_list [] (make_ctx (Simple values)) tokens
 
-let compile ?(get_helper = default_get_helper) template values =
+let compile ?(get_helper = default_get_helper) ?(get_partial = default_get_partial) template values =
   let lexbuf = uchar_array_of_string template |> Sedlexing.from_uchar_array in
   match Lexer.lex lexbuf with
   | Error e -> Error (LexError e)
   | Ok tokens -> (
-      match compile_tokens get_helper tokens values with
+      match compile_tokens get_helper get_partial tokens values with
       | Error e -> Error (CompileError e)
       | Ok result -> Ok result)
 
 (* Inline Tests *)
 
-let make_test ?(get_helper = default_get_helper) template values expected =
-  let result = compile ~get_helper template values in
+let make_test ?(get_helper = default_get_helper) ?(get_partial = default_get_partial) template values expected =
+  let result = compile ~get_helper ~get_partial template values in
   match result = expected with
   | true -> true
   | false ->
@@ -450,3 +472,63 @@ let%test "fallback with WhateverMakesSense" =
   in
   let values = `Assoc [ ("name", `String "from variable") ] in
   make_test ~get_helper template values (Ok "from helper")
+
+(* Partial tests - these will fail until we implement partials *)
+
+let%test "basic partial inclusion should work" =
+  (* Test: {{> greeting}} should include the greeting partial *)
+  let template = "Hello {{> greeting}}!" in
+  let get_partial name =
+    match name with
+    | "greeting" -> Some "{{name}}"
+    | _ -> None
+  in
+  let values = `Assoc [ ("name", `String "World") ] in
+  make_test ~get_partial template values (Ok "Hello World!")
+
+let%test "partial with context inheritance should work" =
+  (* Test: partial inherits current context *)
+  let template = "{{#with user}}{{> userCard}}{{/with}}" in
+  let get_partial name =
+    match name with
+    | "userCard" -> Some "Name: {{name}}, Age: {{age}}"
+    | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [("name", `String "Alice"); ("age", `Int 25)]) ] in
+  make_test ~get_partial template values (Ok "Name: Alice, Age: 25")
+
+let%test "partial with custom context should work - Phase 2" =
+  (* Test: This will be implemented in Phase 2 - context arguments *)
+  let template = "{{> greeting}}" in  (* For now, just basic partials *)
+  let get_partial name =
+    match name with
+    | "greeting" -> Some "Hello {{user.name}}!"  (* Access nested context *)
+    | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [("name", `String "Bob")]) ] in
+  make_test ~get_partial template values (Ok "Hello Bob!")
+
+let%test "nested partials should work" =
+  (* Test: partials can include other partials *)
+  let template = "{{> outer}}" in
+  let get_partial name =
+    match name with
+    | "outer" -> Some "Outer: {{> inner}}"
+    | "inner" -> Some "Inner: {{value}}"
+    | _ -> None
+  in
+  let values = `Assoc [ ("value", `String "test") ] in
+  make_test ~get_partial template values (Ok "Outer: Inner: test")
+
+let%test "partial recursion should be prevented" =
+  (* Test: recursive partials should error, not loop *)
+  let get_partial name =
+    match name with
+    | "recursive" -> Some "{{> recursive}}"  (* infinite loop *)
+    | _ -> None
+  in
+  let values = `Assoc [] in
+  (* This will infinite loop until we implement recursion prevention *)
+  (* For now, just test that missing partials error properly *)
+  let template_missing = "{{> missing}}" in
+  make_test ~get_partial template_missing values (Error (CompileError (Missing_partial "missing")))

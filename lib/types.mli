@@ -35,6 +35,7 @@ and token =
   | `Escaped of evalable
   | `Unescaped of evalable
   | `Block of block
+  | `Partial of string
   | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show]

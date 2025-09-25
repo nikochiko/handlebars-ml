@@ -8,6 +8,7 @@ type config = {
   template_source : input_source;
   data_source : input_source;
   inline_json : string option;
+  partials_dir : string option;
 }
 
 let version = "0.1.0"
@@ -18,11 +19,13 @@ let usage_msg =
   "Examples:\n" ^
   "  echo '{\"name\":\"World\"}' | handlebars-ml template.hbs\n" ^
   "  handlebars-ml -d data.json template.hbs\n" ^
-  "  handlebars-ml -j '{\"name\":\"Alice\"}' <<< 'Hello {{name}}!'\n"
+  "  handlebars-ml -j '{\"name\":\"Alice\"}' <<< 'Hello {{name}}!'\n" ^
+  "  handlebars-ml --partials-dir ./partials template.hbs < data.json\n"
 
 let help_msg = usage_msg ^ "\nOptions:\n" ^
   "  -d, --data FILE     JSON data file (default: stdin)\n" ^
   "  -j, --json STRING   Inline JSON data\n" ^
+  "  --partials-dir DIR  Load partials from directory (*.hbs files)\n" ^
   "  -h, --help          Show this help\n" ^
   "  -v, --version       Show version\n"
 
@@ -75,12 +78,28 @@ let yojson_to_literal_or_collection json =
   in
   convert json
 
+let load_partials_from_dir dir =
+  try
+    let entries = Sys.readdir dir in
+    let partials = ref [] in
+    Array.iter (fun entry ->
+      if String.ends_with ~suffix:".hbs" entry then
+        let filepath = Filename.concat dir entry in
+        let name = Filename.remove_extension entry in
+        match read_file filepath with
+        | Ok content -> partials := (name, content) :: !partials
+        | Error _ -> () (* Skip files that can't be read *)
+    ) entries;
+    Ok !partials
+  with
+  | Sys_error msg -> Error ("Failed to read partials directory: " ^ msg)
+
 let error_and_exit msg code =
   Printf.eprintf "Error: %s\n" msg;
   exit code
 
 let parse_args () =
-  let config = ref { template_source = Stdin; data_source = Stdin; inline_json = None } in
+  let config = ref { template_source = Stdin; data_source = Stdin; inline_json = None; partials_dir = None } in
   let template_file = ref None in
   let set_template_file file = template_file := Some file in
 
@@ -97,6 +116,9 @@ let parse_args () =
         parse_args_rec rest
     | "-j" :: json :: rest | "--json" :: json :: rest ->
         config := { !config with inline_json = Some json };
+        parse_args_rec rest
+    | "--partials-dir" :: dir :: rest ->
+        config := { !config with partials_dir = Some dir };
         parse_args_rec rest
     | file :: rest when not (String.starts_with ~prefix:"-" file) ->
         set_template_file file;
@@ -138,8 +160,22 @@ let main () =
     | Error msg -> error_and_exit msg 3
   in
 
+  (* Load partials from directory if specified *)
+  let all_partials = match config.partials_dir with
+    | None -> []
+    | Some dir ->
+        match load_partials_from_dir dir with
+        | Ok dir_partials -> dir_partials
+        | Error msg -> error_and_exit msg 2
+  in
+
+  (* Create partial lookup function *)
+  let get_partial name =
+    List.assoc_opt name all_partials
+  in
+
   (* Compile template *)
-  match compile template data with
+  match compile ~get_partial template data with
   | Ok result ->
       print_string result;
       exit 0

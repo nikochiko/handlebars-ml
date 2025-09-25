@@ -239,6 +239,14 @@ and lex_templ ~container buf : lex_result =
         else container
       in
       lex ~container buf
+  | '>' ->
+      let* (strip_after, partial_name), buf = lex_partial lex_templ_close buf in
+      let container = add_token container (`Partial partial_name) in
+      let container =
+        if strip_after then add_token container `WhitespaceControl
+        else container
+      in
+      lex ~container buf
   | _ ->
       let* (strip_after, evalable), buf =
         lex_eval_or_apply lex_templ_close buf
@@ -384,6 +392,15 @@ and lex_string ~closing_char acc buf : string partial_lex_result =
       if matched = closing_char then Ok (string_of_uchar_array acc, buf)
       else lex_string ~closing_char (Array.append acc [| matched |]) buf
   | _ -> aux acc buf
+
+and lex_partial lex_stop buf : (bool * string) partial_lex_result =
+  match%sedlex buf with
+  | white_space -> lex_partial lex_stop buf
+  | ident ->
+      let name = lexeme buf |> string_of_uchar_array in
+      let* stop_result, buf = lex_stop buf in
+      Ok ((stop_result, name), buf)
+  | _ -> Error (mkerr "expected partial name" buf)
 
 and lex_ident_path buf : ident_path_segment list partial_lex_result =
   let rec aux acc buf =
@@ -760,4 +777,22 @@ let%test "lexes multiple index arguments" =
              else_content = [];
            };
          `Raw (uchar_array_of_string " ");
+       ])
+
+let%test "lexes basic partial syntax" =
+  make_test "Hello {{> greeting}}!"
+    (Ok
+       [
+         `Raw (uchar_array_of_string "Hello ");
+         `Partial "greeting";
+         `Raw (uchar_array_of_string "!");
+       ])
+
+let%test "lexes partial with whitespace control" =
+  make_test "{{~> greeting ~}}"
+    (Ok
+       [
+         `WhitespaceControl;
+         `Partial "greeting";
+         `WhitespaceControl;
        ])

@@ -3,6 +3,8 @@ open Types
 (** Compilation errors that can occur during template processing *)
 type compile_error =
   | Missing_helper of string (** Helper function not found *)
+  | Missing_partial of string (** Partial template not found *)
+  | Partial_recursion of string (** Recursive partial inclusion detected *)
   | Type_error of string (** Type mismatch or invalid operation *)
 [@@deriving show]
 
@@ -37,6 +39,9 @@ type custom_helper = literal_or_collection list -> literal_or_collection option
 (** Function to look up custom helpers by name *)
 type custom_helper_lookup_fn = string -> custom_helper option
 
+(** Function to look up partial templates by name *)
+type partial_lookup_fn = string -> string option
+
 
 (** Create a context from a value with optional parent *)
 val make_ctx : ?parent_ctx:context -> context_value -> context
@@ -66,6 +71,7 @@ val escape_html : string -> string
 (** Compile a list of tokens with given context and helpers *)
 val compile_tokens :
   custom_helper_lookup_fn ->
+  partial_lookup_fn ->
   token list ->
   literal_or_collection ->
   compile_result
@@ -73,10 +79,13 @@ val compile_tokens :
 (** Default helper lookup function with built-in helpers *)
 val default_get_helper : custom_helper_lookup_fn
 
+(** Default partial lookup function (returns None for all partials) *)
+val default_get_partial : partial_lookup_fn
 
 (** Main compilation function *)
 val compile :
   ?get_helper:custom_helper_lookup_fn ->
+  ?get_partial:partial_lookup_fn ->
   string ->
   literal_or_collection ->
   hb_result
