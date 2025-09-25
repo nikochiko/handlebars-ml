@@ -33,6 +33,7 @@ type block = {
 and partial_info = {
   name : string;
   context : evalable option;
+  hash_args : (string * evalable) list;
 }
 
 and token =

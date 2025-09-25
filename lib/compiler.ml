@@ -2,9 +2,18 @@ open Types
 
 type compile_error =
   | Missing_helper of string
+      [@printer fun fmt -> fprintf fmt "Missing helper: %s"]
   | Missing_partial of string
-  | Partial_recursion of string
-  | Type_error of string
+      [@printer fun fmt -> fprintf fmt "Missing partial: %s"]
+  | Partial_lex_error of string * lex_error
+      [@printer
+        fun fmt (name, e) ->
+          Format.fprintf fmt "Lex error in partial \"%s\": %s" name
+            (show_lex_error e)]
+  | Partial_compile_error of string * compile_error
+      [@printer
+        fun fmt (name, e) ->
+          Format.fprintf fmt "In partial \"%s\": %s" name (show_compile_error e)]
 [@@deriving show]
 
 type compile_result = (string, compile_error) result
@@ -25,7 +34,6 @@ type context =
 type custom_helper = literal_or_collection list -> literal_or_collection option
 type custom_helper_lookup_fn = string -> custom_helper option
 type partial_lookup_fn = string -> string option
-
 
 let ( >>= ) = Result.bind
 let ( let* ) = ( >>= )
@@ -105,11 +113,11 @@ let lookup ctx segments =
       | Simple v -> v
       | WithExtras { v; extras } -> (
           match segments with
-          | `Ident name :: _ when String.starts_with ~prefix:"@" name ->
-              (match name with
-              | "@root" ->
+          | `Ident name :: _ when String.starts_with ~prefix:"@" name -> (
+              match name with
+              | "@root" -> (
                   (* Return root context value *)
-                  (match ctx with
+                  match ctx with
                   | Root { v = Simple root_v } -> root_v
                   | Child { root = Root { v = Simple root_v }; _ } -> root_v
                   | _ -> `Null)
@@ -118,15 +126,16 @@ let lookup ctx segments =
     in
     match segments with
     | [] -> actual_v
-    | `Ident name :: rest when name = "@root" -> (
+    | `Ident name :: rest when name = "@root" ->
         (* Handle @root.property access *)
-        let root_v = match ctx with
+        let root_v =
+          match ctx with
           | Root { v = Simple root_v } -> root_v
           | Child { root = Root { v = Simple root_v }; _ } -> root_v
           | _ -> `Null
         in
         let root_ctx = Root { v = Simple root_v } in
-        aux root_ctx rest)
+        aux root_ctx rest
     | `Ident name :: rest -> (
         if name = "." then aux ctx rest
         else
@@ -134,9 +143,12 @@ let lookup ctx segments =
           | `Assoc lst -> (
               match List.assoc_opt name lst with
               | Some next_v ->
-                  let new_parent = match ctx with
-                    | Root _ as root -> Child { v = Simple next_v; parent = root; root }
-                    | Child { root; _ } as parent -> Child { v = Simple next_v; parent; root }
+                  let new_parent =
+                    match ctx with
+                    | Root _ as root ->
+                        Child { v = Simple next_v; parent = root; root }
+                    | Child { root; _ } as parent ->
+                        Child { v = Simple next_v; parent; root }
                   in
                   aux new_parent rest
               | None -> `Null)
@@ -146,9 +158,12 @@ let lookup ctx segments =
         | `Assoc lst -> (
             match List.assoc_opt name lst with
             | Some next_v ->
-                let new_parent = match ctx with
-                  | Root _ as root -> Child { v = Simple next_v; parent = root; root }
-                  | Child { root; _ } as parent -> Child { v = Simple next_v; parent; root }
+                let new_parent =
+                  match ctx with
+                  | Root _ as root ->
+                      Child { v = Simple next_v; parent = root; root }
+                  | Child { root; _ } as parent ->
+                      Child { v = Simple next_v; parent; root }
                 in
                 aux new_parent rest
             | None -> `Null)
@@ -158,9 +173,12 @@ let lookup ctx segments =
         | `List lst -> (
             match List.nth_opt lst idx with
             | Some next_v ->
-                let new_parent = match ctx with
-                  | Root _ as root -> Child { v = Simple next_v; parent = root; root }
-                  | Child { root; _ } as parent -> Child { v = Simple next_v; parent; root }
+                let new_parent =
+                  match ctx with
+                  | Root _ as root ->
+                      Child { v = Simple next_v; parent = root; root }
+                  | Child { root; _ } as parent ->
+                      Child { v = Simple next_v; parent; root }
                 in
                 aux new_parent rest
             | None -> `Null)
@@ -202,7 +220,6 @@ let rec eval ctx get_helper (expr : evalable) =
             | result -> result)
       in
       try_eval exprs
-
 
 let default_get_helper name =
   let upper args =
@@ -256,10 +273,9 @@ let compile_tokens get_helper get_partial tokens values =
     | `Block { expr; content; else_content } :: rest ->
         let* compiled_block = compile_block expr content else_content ctx in
         compile_token_list (compiled_block :: acc) ctx rest
-    | `Partial { name; context } :: rest ->
-        let* compiled_partial = compile_partial name context ctx in
+    | `Partial { name; context; hash_args } :: rest ->
+        let* compiled_partial = compile_partial name context hash_args ctx in
         compile_token_list (compiled_partial :: acc) ctx rest
-
   and compile_block expr content else_content ctx =
     match expr with
     | `App ("if", [ condition ]) ->
@@ -277,8 +293,7 @@ let compile_tokens get_helper get_partial tokens values =
         compile_token_list [] new_ctx content_to_use
     | `App ("each", [ iterable_expr ]) -> (
         let* value = eval ctx get_helper iterable_expr in
-        if not (is_truthy value) then
-          compile_token_list [] ctx else_content
+        if not (is_truthy value) then compile_token_list [] ctx else_content
         else
           match value with
           | `List lst ->
@@ -324,8 +339,7 @@ let compile_tokens get_helper get_partial tokens values =
                      (Ok [])
               in
               Ok (List.rev all_compiled |> String.concat "")
-          | _ ->
-              compile_token_list [] ctx else_content)
+          | _ -> compile_token_list [] ctx else_content)
     | other_expr ->
         let* value = eval ctx get_helper other_expr in
         let content_to_use =
@@ -336,29 +350,77 @@ let compile_tokens get_helper get_partial tokens values =
           else ctx
         in
         compile_token_list [] new_ctx content_to_use
-
-  and compile_partial name context_opt ctx =
+  and compile_partial name context_opt hash_args ctx =
     match get_partial name with
     | None -> Error (Missing_partial name)
-    | Some partial_template ->
+    | Some partial_template -> (
         (* Determine context for partial *)
-        let* partial_ctx = match context_opt with
-          | None -> Ok ctx  (* inherit current context *)
+        let* partial_ctx =
+          match context_opt with
+          | None -> Ok ctx (* inherit current context *)
           | Some context_expr ->
               let* context_value = eval ctx get_helper context_expr in
               Ok (make_ctx ~parent_ctx:ctx (Simple context_value))
         in
+        (* Evaluate hash arguments and add them to context *)
+        let* partial_ctx_with_hash =
+          if hash_args = [] then Ok partial_ctx
+          else
+            (* Evaluate hash arguments *)
+            let* hash_values =
+              List.fold_left
+                (fun acc_result (key, expr) ->
+                  let* acc = acc_result in
+                  let* value = eval ctx get_helper expr in
+                  Ok ((key, value) :: acc))
+                (Ok []) hash_args
+            in
+            let hash_values = List.rev hash_values in
+            (* Merge hash arguments with context *)
+            let current_context_value =
+              match partial_ctx with Root { v } -> v | Child { v; _ } -> v
+            in
+            let merged_context_value =
+              match current_context_value with
+              | Simple (`Assoc existing_pairs) ->
+                  (* Merge hash arguments with existing context properties, with hash args taking precedence *)
+                  Simple (`Assoc (hash_values @ existing_pairs))
+              | Simple _ ->
+                  (* Create new context with just hash args *)
+                  Simple (`Assoc hash_values)
+              | WithExtras { v = `Assoc existing_pairs; extras } ->
+                  (* Preserve extras (like @index, @key) and merge hash args with existing pairs *)
+                  WithExtras
+                    { v = `Assoc (hash_values @ existing_pairs); extras }
+              | WithExtras { v = _; extras } ->
+                  (* Create new context with hash args, preserve extras *)
+                  WithExtras { v = `Assoc hash_values; extras }
+            in
+            let updated_ctx =
+              match partial_ctx with
+              | Root _ -> Root { v = merged_context_value }
+              | Child { parent; root; _ } ->
+                  Child { v = merged_context_value; parent; root }
+            in
+            Ok updated_ctx
+        in
         (* Parse and compile the partial template *)
-        let lexbuf = uchar_array_of_string partial_template |> Sedlexing.from_uchar_array in
+        let lexbuf =
+          uchar_array_of_string partial_template |> Sedlexing.from_uchar_array
+        in
         match Lexer.lex lexbuf with
-        | Error e -> Error (Type_error ("Partial lexer error in '" ^ name ^ "': " ^ show_lex_error e))
-        | Ok partial_tokens ->
-            (* Recursively compile the partial tokens *)
-            compile_token_list [] partial_ctx partial_tokens
+        | Error e -> Error (Partial_lex_error (name, e))
+        | Ok partial_tokens -> (
+            match
+              compile_token_list [] partial_ctx_with_hash partial_tokens
+            with
+            | Error e -> Error (Partial_compile_error (name, e))
+            | Ok result -> Ok result))
   in
   compile_token_list [] (make_ctx (Simple values)) tokens
 
-let compile ?(get_helper = default_get_helper) ?(get_partial = default_get_partial) template values =
+let compile ?(get_helper = default_get_helper)
+    ?(get_partial = default_get_partial) template values =
   let lexbuf = uchar_array_of_string template |> Sedlexing.from_uchar_array in
   match Lexer.lex lexbuf with
   | Error e -> Error (LexError e)
@@ -369,7 +431,8 @@ let compile ?(get_helper = default_get_helper) ?(get_partial = default_get_parti
 
 (* Inline Tests *)
 
-let make_test ?(get_helper = default_get_helper) ?(get_partial = default_get_partial) template values expected =
+let make_test ?(get_helper = default_get_helper)
+    ?(get_partial = default_get_partial) template values expected =
   let result = compile ~get_helper ~get_partial template values in
   match result = expected with
   | true -> true
@@ -500,6 +563,14 @@ let%test "with block context" =
   let values = `Assoc [ ("user", `Assoc [ ("name", `String "Bob") ]) ] in
   make_test template values (Ok "Hello Bob")
 
+let%test "mustache-style block with dot-nesting" =
+  let template = "{{#resume.basics}}{{name}}{{/resume.basics}}" in
+  let values =
+    `Assoc
+      [ ("resume", `Assoc [ ("basics", `Assoc [ ("name", `String "Eve") ]) ]) ]
+  in
+  make_test template values (Ok "Eve")
+
 let%test "fallback with WhateverMakesSense" =
   let template = "{{name}}" in
   let get_helper name =
@@ -516,9 +587,7 @@ let%test "basic partial inclusion should work" =
   (* Test: {{> greeting}} should include the greeting partial *)
   let template = "Hello {{> greeting}}!" in
   let get_partial name =
-    match name with
-    | "greeting" -> Some "{{name}}"
-    | _ -> None
+    match name with "greeting" -> Some "{{name}}" | _ -> None
   in
   let values = `Assoc [ ("name", `String "World") ] in
   make_test ~get_partial template values (Ok "Hello World!")
@@ -531,18 +600,21 @@ let%test "partial with context inheritance should work" =
     | "userCard" -> Some "Name: {{name}}, Age: {{age}}"
     | _ -> None
   in
-  let values = `Assoc [ ("user", `Assoc [("name", `String "Alice"); ("age", `Int 25)]) ] in
+  let values =
+    `Assoc [ ("user", `Assoc [ ("name", `String "Alice"); ("age", `Int 25) ]) ]
+  in
   make_test ~get_partial template values (Ok "Name: Alice, Age: 25")
 
 let%test "partial with custom context should work - Phase 2" =
   (* Test: This will be implemented in Phase 2 - context arguments *)
-  let template = "{{> greeting}}" in  (* For now, just basic partials *)
+  let template = "{{> greeting}}" in
+  (* For now, just basic partials *)
   let get_partial name =
     match name with
-    | "greeting" -> Some "Hello {{user.name}}!"  (* Access nested context *)
+    | "greeting" -> Some "Hello {{user.name}}!" (* Access nested context *)
     | _ -> None
   in
-  let values = `Assoc [ ("user", `Assoc [("name", `String "Bob")]) ] in
+  let values = `Assoc [ ("user", `Assoc [ ("name", `String "Bob") ]) ] in
   make_test ~get_partial template values (Ok "Hello Bob!")
 
 let%test "nested partials should work" =
@@ -561,14 +633,15 @@ let%test "partial recursion should be prevented" =
   (* Test: recursive partials should error, not loop *)
   let get_partial name =
     match name with
-    | "recursive" -> Some "{{> recursive}}"  (* infinite loop *)
+    | "recursive" -> Some "{{> recursive}}" (* infinite loop *)
     | _ -> None
   in
   let values = `Assoc [] in
   (* This will infinite loop until we implement recursion prevention *)
   (* For now, just test that missing partials error properly *)
   let template_missing = "{{> missing}}" in
-  make_test ~get_partial template_missing values (Error (CompileError (Missing_partial "missing")))
+  make_test ~get_partial template_missing values
+    (Error (CompileError (Missing_partial "missing")))
 
 (* Phase 2: Partial context tests *)
 
@@ -576,11 +649,9 @@ let%test "partial with explicit context should work" =
   (* Test: {{> partial context}} passes specific context *)
   let template = "{{> greeting user}}" in
   let get_partial name =
-    match name with
-    | "greeting" -> Some "Hello {{name}}!"
-    | _ -> None
+    match name with "greeting" -> Some "Hello {{name}}!" | _ -> None
   in
-  let values = `Assoc [ ("user", `Assoc [("name", `String "Bob")]) ] in
+  let values = `Assoc [ ("user", `Assoc [ ("name", `String "Bob") ]) ] in
   make_test ~get_partial template values (Ok "Hello Bob!")
 
 let%test "partial with nested context expression should work" =
@@ -591,7 +662,16 @@ let%test "partial with nested context expression should work" =
     | "userCard" -> Some "Name: {{name}}, Age: {{age}}"
     | _ -> None
   in
-  let values = `Assoc [ ("user", `Assoc [("profile", `Assoc [("name", `String "Alice"); ("age", `Int 30)])]) ] in
+  let values =
+    `Assoc
+      [
+        ( "user",
+          `Assoc
+            [
+              ("profile", `Assoc [ ("name", `String "Alice"); ("age", `Int 30) ]);
+            ] );
+      ]
+  in
   make_test ~get_partial template values (Ok "Name: Alice, Age: 30")
 
 let%test "partial with literal context should work" =
@@ -599,7 +679,7 @@ let%test "partial with literal context should work" =
   let template = "{{> echo \"Hello World\"}}" in
   let get_partial name =
     match name with
-    | "echo" -> Some "{{.}}"  (* Current context should be the literal *)
+    | "echo" -> Some "{{.}}" (* Current context should be the literal *)
     | _ -> None
   in
   let values = `Assoc [] in
@@ -609,11 +689,15 @@ let%test "partial context should not affect parent context" =
   (* Test: context changes in partial shouldn't leak out *)
   let template = "{{name}} {{> greeting user}} {{name}}" in
   let get_partial name =
-    match name with
-    | "greeting" -> Some "Hi {{name}}!"
-    | _ -> None
+    match name with "greeting" -> Some "Hi {{name}}!" | _ -> None
   in
-  let values = `Assoc [ ("name", `String "Main"); ("user", `Assoc [("name", `String "Partial")]) ] in
+  let values =
+    `Assoc
+      [
+        ("name", `String "Main");
+        ("user", `Assoc [ ("name", `String "Partial") ]);
+      ]
+  in
   make_test ~get_partial template values (Ok "Main Hi Partial! Main")
 
 (* @root context tests *)
@@ -621,13 +705,24 @@ let%test "partial context should not affect parent context" =
 let%test "@root should reference initial context" =
   (* Test: @root always refers to the original context *)
   let template = "{{name}} {{#with user}}{{name}} {{@root.name}}{{/with}}" in
-  let values = `Assoc [ ("name", `String "Root"); ("user", `Assoc [("name", `String "User")]) ] in
+  let values =
+    `Assoc
+      [
+        ("name", `String "Root"); ("user", `Assoc [ ("name", `String "User") ]);
+      ]
+  in
   make_test template values (Ok "Root User Root")
 
 let%test "@root should work in each blocks" =
   (* Test: @root works inside iteration *)
   let template = "{{#each items}}{{.}} - {{@root.title}} {{/each}}" in
-  let values = `Assoc [ ("title", `String "List"); ("items", `List [`String "A"; `String "B"; `String "C"]) ] in
+  let values =
+    `Assoc
+      [
+        ("title", `String "List");
+        ("items", `List [ `String "A"; `String "B"; `String "C" ]);
+      ]
+  in
   make_test template values (Ok "A - List B - List C - List ")
 
 let%test "@root should work in partials" =
@@ -638,19 +733,129 @@ let%test "@root should work in partials" =
     | "item_card" -> Some "{{name}} (from {{@root.source}})"
     | _ -> None
   in
-  let values = `Assoc [ ("source", `String "API"); ("item", `Assoc [("name", `String "Widget")]) ] in
+  let values =
+    `Assoc
+      [
+        ("source", `String "API");
+        ("item", `Assoc [ ("name", `String "Widget") ]);
+      ]
+  in
   make_test ~get_partial template values (Ok "Widget (from API)")
 
 let%test "@root should work with nested contexts" =
   (* Test: @root works with deep nesting *)
-  let template = "{{#with company}}{{#each departments}}{{name}}: {{@root.company_name}} {{/each}}{{/with}}" in
-  let values = `Assoc [
-    ("company_name", `String "Acme Corp");
-    ("company", `Assoc [
-      ("departments", `List [
-        `Assoc [("name", `String "Engineering")];
-        `Assoc [("name", `String "Sales")]
-      ])
-    ])
-  ] in
+  let template =
+    "{{#with company}}{{#each departments}}{{name}}: {{@root.company_name}} \
+     {{/each}}{{/with}}"
+  in
+  let values =
+    `Assoc
+      [
+        ("company_name", `String "Acme Corp");
+        ( "company",
+          `Assoc
+            [
+              ( "departments",
+                `List
+                  [
+                    `Assoc [ ("name", `String "Engineering") ];
+                    `Assoc [ ("name", `String "Sales") ];
+                  ] );
+            ] );
+      ]
+  in
   make_test template values (Ok "Engineering: Acme Corp Sales: Acme Corp ")
+
+(* Hash arguments tests *)
+
+let%test "partial with single hash argument should work" =
+  (* Test: {{> greeting name="World"}} *)
+  let template = "{{> greeting name=\"World\"}}" in
+  let get_partial name =
+    match name with "greeting" -> Some "Hello {{name}}!" | _ -> None
+  in
+  let values = `Assoc [] in
+  make_test ~get_partial template values (Ok "Hello World!")
+
+let%test "partial with multiple hash arguments should work" =
+  (* Test: {{> user-card name="Alice" age=25}} *)
+  let template = "{{> user-card name=\"Alice\" age=25}}" in
+  let get_partial name =
+    match name with
+    | "user-card" -> Some "Name: {{name}}, Age: {{age}}"
+    | _ -> None
+  in
+  let values = `Assoc [] in
+  make_test ~get_partial template values (Ok "Name: Alice, Age: 25")
+
+let%test "partial with context and hash arguments should work" =
+  (* Test: {{> greeting user msg="Hi"}} - context provides base, hash provides extras *)
+  let template = "{{> greeting user msg=\"Hi\"}}" in
+  let get_partial name =
+    match name with "greeting" -> Some "{{msg}} {{name}}!" | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [ ("name", `String "Alice") ]) ] in
+  make_test ~get_partial template values (Ok "Hi Alice!")
+
+let%test "partial hash arguments should override context values" =
+  (* Test: hash arguments should take precedence over context properties *)
+  let template = "{{> greeting user name=\"Override\"}}" in
+  let get_partial name =
+    match name with "greeting" -> Some "Hello {{name}}!" | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [ ("name", `String "Original") ]) ] in
+  make_test ~get_partial template values (Ok "Hello Override!")
+
+let%test "partial with variable as hash argument value should work" =
+  (* Test: {{> greeting msg=message}} *)
+  let template = "{{> greeting msg=message}}" in
+  let get_partial name =
+    match name with "greeting" -> Some "Message: {{msg}}" | _ -> None
+  in
+  let values = `Assoc [ ("message", `String "Hello World") ] in
+  make_test ~get_partial template values (Ok "Message: Hello World")
+
+let%test "partial hash arguments work with context object properties" =
+  (* Test: hash args are merged with context object properties *)
+  let template = "{{> wrapper user title=\"User Profile\"}}" in
+  let get_partial name =
+    match name with
+    | "wrapper" -> Some "{{title}}: {{name}} ({{age}})"
+    | _ -> None
+  in
+  let values =
+    `Assoc [ ("user", `Assoc [ ("name", `String "Bob"); ("age", `Int 30) ]) ]
+  in
+  make_test ~get_partial template values (Ok "User Profile: Bob (30)")
+
+let%test "partial without context inherits current execution context" =
+  (* Test: partials without context args inherit the current context *)
+  let template = "{{#with user}}{{> greeting}}{{/with}}" in
+  let get_partial name =
+    match name with "greeting" -> Some "Hello {{name}}!" | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [ ("name", `String "Alice") ]) ] in
+  make_test ~get_partial template values (Ok "Hello Alice!")
+
+let%test
+    "partial with hash args but no context inherits current execution context" =
+  (* Test: partials with hash args but no context inherit current context and merge hash args *)
+  let template = "{{#with user}}{{> greeting msg=\"Hi\"}}{{/with}}" in
+  let get_partial name =
+    match name with "greeting" -> Some "{{msg}} {{name}}!" | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [ ("name", `String "Bob") ]) ] in
+  make_test ~get_partial template values (Ok "Hi Bob!")
+
+let%test "partial with hash args inherits loop context variables" =
+  (* Test: partials inherit @index, @key, etc. from loop contexts *)
+  let template =
+    {| {{~#each items}}{{> item-display prefix="Item"}}{{/each~}} |}
+  in
+  let get_partial name =
+    match name with
+    | "item-display" -> Some "{{@index}}: {{prefix}}"
+    | _ -> None
+  in
+  let values = `Assoc [ ("items", `List [ `String "A"; `String "B" ]) ] in
+  make_test ~get_partial template values (Ok "0: Item1: Item")

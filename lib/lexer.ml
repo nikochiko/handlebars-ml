@@ -400,26 +400,56 @@ and lex_partial lex_stop buf : (bool * partial_info) partial_lex_result =
   | white_space -> lex_partial lex_stop buf
   | ident ->
       let name = lexeme buf |> string_of_uchar_array in
-      (* Check if there's a context argument after the name *)
-      let* (stop_result, context), buf =
-        match%sedlex buf with
-        | white_space -> (
-            (* Try to parse context argument *)
-            match lex_eval buf with
-            | Ok (context_expr, buf') ->
-                let* stop_result, buf' = lex_stop buf' in
-                Ok ((stop_result, Some context_expr), buf')
-            | Error _ ->
-                (* No context, just close *)
-                let* stop_result, buf = lex_stop buf in
-                Ok ((stop_result, None), buf))
-        | _ ->
-            (* No context, just close *)
-            let* stop_result, buf = lex_stop buf in
-            Ok ((stop_result, None), buf)
+      (* Parse arguments - context and hash arguments *)
+      let* (stop_result, context, hash_args), buf =
+        lex_partial_args lex_stop buf
       in
-      Ok ((stop_result, { name; context }), buf)
+      Ok ((stop_result, { name; context; hash_args }), buf)
   | _ -> Error (mkerr "expected partial name" buf)
+
+and lex_partial_args lex_stop buf :
+    (bool * evalable option * (string * evalable) list) partial_lex_result =
+  (* Use the same approach as lex_args but with logic for hash vs context *)
+  let rec aux context hash_args buf =
+    match%sedlex buf with
+    | white_space -> aux context hash_args buf
+    | _ -> (
+        match lex_stop buf with
+        | Ok (stop_result, buf) ->
+            Ok ((stop_result, context, List.rev hash_args), buf)
+        | Error { buf; _ } -> (
+            (* We need to parse an argument. Let's try to determine what type it is. *)
+            (* The key insight: hash arguments have the form "key=value" *)
+            (* Let's use a more direct approach by trying to parse an evalable first *)
+            (* and then checking if it's followed by '=' *)
+            let* evalable, buf_after_eval = lex_eval buf in
+            (* Check if this evalable is a simple identifier followed by '=' *)
+            match evalable with
+            | `IdentPath [ `Ident key ] -> (
+                (* This is a simple identifier, check if it's followed by '=' *)
+                match%sedlex buf_after_eval with
+                | Star white_space, '=' ->
+                    (* This is a hash argument: key=value *)
+                    let* value, buf = lex_eval buf_after_eval in
+                    aux context ((key, value) :: hash_args) buf
+                | _ -> (
+                    (* This is not a hash argument, it's a context argument *)
+                    match context with
+                    | None -> aux (Some evalable) hash_args buf_after_eval
+                    | Some _ ->
+                        Error
+                          (mkerr "unexpected argument after context"
+                             buf_after_eval)))
+            | _ -> (
+                (* This is not a simple identifier, so it must be a context argument *)
+                match context with
+                | None -> aux (Some evalable) hash_args buf_after_eval
+                | Some _ ->
+                    Error
+                      (mkerr "unexpected argument after context" buf_after_eval)
+                )))
+  in
+  aux None [] buf
 
 and lex_ident_path buf : ident_path_segment list partial_lex_result =
   let rec aux acc buf =
@@ -688,6 +718,23 @@ let%test "lexes mustache-style open & close blocks" =
            };
        ])
 
+let%test "lexes mustache style open/close with dot-index path" =
+  make_test "{{#resume.basics}}{{name}}{{/resume.basics}}"
+    (Ok
+       [
+         `Block
+           {
+             expr = `IdentPath [ `Ident "resume"; `Ident "basics" ];
+             content =
+               [
+                 `Escaped
+                   (`WhateverMakesSense
+                      [ `App ("name", []); `IdentPath [ `Ident "name" ] ]);
+               ];
+             else_content = [];
+           };
+       ])
+
 let%test "lexes inverted blocks" =
   make_test "{{^a}}{{ . }}{{/a}}"
     (Ok
@@ -803,7 +850,7 @@ let%test "lexes basic partial syntax" =
     (Ok
        [
          `Raw (uchar_array_of_string "Hello ");
-         `Partial { name = "greeting"; context = None };
+         `Partial { name = "greeting"; context = None; hash_args = [] };
          `Raw (uchar_array_of_string "!");
        ])
 
@@ -812,7 +859,7 @@ let%test "lexes partial with whitespace control" =
     (Ok
        [
          `WhitespaceControl;
-         `Partial { name = "greeting"; context = None };
+         `Partial { name = "greeting"; context = None; hash_args = [] };
          `WhitespaceControl;
        ])
 
@@ -821,9 +868,65 @@ let%test "lexes partial with context" =
     (Ok
        [
          `Partial
-           { name = "greeting"; context = Some (`IdentPath [ `Ident "user" ]) };
+           {
+             name = "greeting";
+             context = Some (`IdentPath [ `Ident "user" ]);
+             hash_args = [];
+           };
        ])
 
 let%test "lexes parital name with hyphen" =
   make_test "{{> my-partial}}"
-    (Ok [ `Partial { name = "my-partial"; context = None } ])
+    (Ok [ `Partial { name = "my-partial"; context = None; hash_args = [] } ])
+
+let%test "lexes partial with single hash argument" =
+  make_test "{{> greeting name=\"World\"}}"
+    (Ok
+       [
+         `Partial
+           {
+             name = "greeting";
+             context = None;
+             hash_args = [ ("name", `Literal (`String "World")) ];
+           };
+       ])
+
+let%test "lexes partial with multiple hash arguments" =
+  make_test "{{> user-card name=\"Alice\" age=25}}"
+    (Ok
+       [
+         `Partial
+           {
+             name = "user-card";
+             context = None;
+             hash_args =
+               [
+                 ("name", `Literal (`String "Alice"));
+                 ("age", `Literal (`Int 25));
+               ];
+           };
+       ])
+
+let%test "lexes partial with context and hash arguments" =
+  make_test "{{> greeting user name=\"Hello\"}}"
+    (Ok
+       [
+         `Partial
+           {
+             name = "greeting";
+             context = Some (`IdentPath [ `Ident "user" ]);
+             hash_args = [ ("name", `Literal (`String "Hello")) ];
+           };
+       ])
+
+let%test "lexes partial with variable as hash argument value" =
+  make_test "{{> greeting msg=message}}"
+    (Ok
+       [
+         `Partial
+           {
+             name = "greeting";
+             context = None;
+             hash_args = [ ("msg", `IdentPath [ `Ident "message" ]) ];
+           };
+       ])
