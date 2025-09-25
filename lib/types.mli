@@ -1,13 +1,17 @@
 type dot_path = [ `OneDot | `TwoDot ] [@@deriving show, eq]
 
-type primitive_literal =
+type literal =
   [ `String of string | `Int of int | `Float of float | `Bool of bool | `Null ]
 [@@deriving show, eq]
 
-type literal = [ primitive_literal | Yojson.Basic.t ] [@@deriving show, eq]
+type literal_or_collection =
+  [ literal
+  | `Assoc of (string * literal_or_collection) list
+  | `List of literal_or_collection list ]
+[@@deriving show, eq]
 
 type ident_path_segment =
-  [ `Ident of string | `DotPath of dot_path | `Index of primitive_literal ]
+  [ `Ident of string | `DotPath of dot_path | `Index of literal ]
 [@@deriving show, eq]
 
 type ident_path = [ `IdentPath of ident_path_segment list ]
@@ -20,11 +24,7 @@ type evalable =
   | `WhateverMakesSense of evalable list ]
 [@@deriving show]
 
-type block_kind = [ `If | `Unless | `Each | `With | `Mustache of ident_path ]
-[@@deriving show, eq]
-
 type block = {
-  kind : block_kind;
   expr : evalable;
   content : token list;
   else_content : token list;
