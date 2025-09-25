@@ -226,8 +226,8 @@ let compile_tokens get_helper get_partial tokens values =
     | `Block { expr; content; else_content } :: rest ->
         let* compiled_block = compile_block expr content else_content ctx in
         compile_token_list (compiled_block :: acc) ctx rest
-    | `Partial name :: rest ->
-        let* compiled_partial = compile_partial name ctx in
+    | `Partial { name; context } :: rest ->
+        let* compiled_partial = compile_partial name context ctx in
         compile_token_list (compiled_partial :: acc) ctx rest
 
   and compile_block expr content else_content ctx =
@@ -307,17 +307,24 @@ let compile_tokens get_helper get_partial tokens values =
         in
         compile_token_list [] new_ctx content_to_use
 
-  and compile_partial name ctx =
+  and compile_partial name context_opt ctx =
     match get_partial name with
     | None -> Error (Missing_partial name)
     | Some partial_template ->
-        (* Parse and compile the partial template with current context *)
+        (* Determine context for partial *)
+        let* partial_ctx = match context_opt with
+          | None -> Ok ctx  (* inherit current context *)
+          | Some context_expr ->
+              let* context_value = eval ctx get_helper context_expr in
+              Ok (make_ctx ~parent_ctx:ctx (Simple context_value))
+        in
+        (* Parse and compile the partial template *)
         let lexbuf = uchar_array_of_string partial_template |> Sedlexing.from_uchar_array in
         match Lexer.lex lexbuf with
         | Error e -> Error (Type_error ("Partial lexer error: " ^ show_lex_error e))
         | Ok partial_tokens ->
             (* Recursively compile the partial tokens *)
-            compile_token_list [] ctx partial_tokens
+            compile_token_list [] partial_ctx partial_tokens
   in
   compile_token_list [] (make_ctx (Simple values)) tokens
 
@@ -532,3 +539,47 @@ let%test "partial recursion should be prevented" =
   (* For now, just test that missing partials error properly *)
   let template_missing = "{{> missing}}" in
   make_test ~get_partial template_missing values (Error (CompileError (Missing_partial "missing")))
+
+let%test "partial with explicit context should work" =
+  (* Test: {{> partial context}} passes specific context *)
+  let template = "{{> greeting user}}" in
+  let get_partial name =
+    match name with
+    | "greeting" -> Some "Hello {{name}}!"
+    | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [("name", `String "Bob")]) ] in
+  make_test ~get_partial template values (Ok "Hello Bob!")
+
+let%test "partial with nested context expression should work" =
+  (* Test: {{> partial user.profile}} *)
+  let template = "{{> userCard user.profile}}" in
+  let get_partial name =
+    match name with
+    | "userCard" -> Some "Name: {{name}}, Age: {{age}}"
+    | _ -> None
+  in
+  let values = `Assoc [ ("user", `Assoc [("profile", `Assoc [("name", `String "Alice"); ("age", `Int 30)])]) ] in
+  make_test ~get_partial template values (Ok "Name: Alice, Age: 30")
+
+let%test "partial with literal context should work" =
+  (* Test: {{> partial "string"}} *)
+  let template = "{{> echo \"Hello World\"}}" in
+  let get_partial name =
+    match name with
+    | "echo" -> Some "{{.}}"  (* Current context should be the literal *)
+    | _ -> None
+  in
+  let values = `Assoc [] in
+  make_test ~get_partial template values (Ok "Hello World")
+
+let%test "partial context should not affect parent context" =
+  (* Test: context changes in partial shouldn't leak out *)
+  let template = "{{name}} {{> greeting user}} {{name}}" in
+  let get_partial name =
+    match name with
+    | "greeting" -> Some "Hi {{name}}!"
+    | _ -> None
+  in
+  let values = `Assoc [ ("name", `String "Main"); ("user", `Assoc [("name", `String "Partial")]) ] in
+  make_test ~get_partial template values (Ok "Main Hi Partial! Main")

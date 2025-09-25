@@ -30,12 +30,17 @@ type block = {
   else_content : token list;
 }
 
+and partial_info = {
+  name : string;
+  context : evalable option;
+}
+
 and token =
   [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
   | `Escaped of evalable
   | `Unescaped of evalable
   | `Block of block
-  | `Partial of string
+  | `Partial of partial_info
   | `WhitespaceControl
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show]

@@ -240,8 +240,8 @@ and lex_templ ~container buf : lex_result =
       in
       lex ~container buf
   | '>' ->
-      let* (strip_after, partial_name), buf = lex_partial lex_templ_close buf in
-      let container = add_token container (`Partial partial_name) in
+      let* (strip_after, partial_info), buf = lex_partial lex_templ_close buf in
+      let container = add_token container (`Partial partial_info) in
       let container =
         if strip_after then add_token container `WhitespaceControl
         else container
@@ -393,13 +393,30 @@ and lex_string ~closing_char acc buf : string partial_lex_result =
       else lex_string ~closing_char (Array.append acc [| matched |]) buf
   | _ -> aux acc buf
 
-and lex_partial lex_stop buf : (bool * string) partial_lex_result =
+and lex_partial lex_stop buf : (bool * partial_info) partial_lex_result =
   match%sedlex buf with
   | white_space -> lex_partial lex_stop buf
   | ident ->
       let name = lexeme buf |> string_of_uchar_array in
-      let* stop_result, buf = lex_stop buf in
-      Ok ((stop_result, name), buf)
+      (* Check if there's a context argument after the name *)
+      let* (stop_result, context), buf =
+        match%sedlex buf with
+        | white_space ->
+            (* Try to parse context argument *)
+            (match lex_eval buf with
+            | Ok (context_expr, buf') ->
+                let* stop_result, buf' = lex_stop buf' in
+                Ok ((stop_result, Some context_expr), buf')
+            | Error _ ->
+                (* No context, just close *)
+                let* stop_result, buf = lex_stop buf in
+                Ok ((stop_result, None), buf))
+        | _ ->
+            (* No context, just close *)
+            let* stop_result, buf = lex_stop buf in
+            Ok ((stop_result, None), buf)
+      in
+      Ok ((stop_result, { name; context }), buf)
   | _ -> Error (mkerr "expected partial name" buf)
 
 and lex_ident_path buf : ident_path_segment list partial_lex_result =
@@ -784,7 +801,7 @@ let%test "lexes basic partial syntax" =
     (Ok
        [
          `Raw (uchar_array_of_string "Hello ");
-         `Partial "greeting";
+         `Partial { name = "greeting"; context = None };
          `Raw (uchar_array_of_string "!");
        ])
 
@@ -793,6 +810,13 @@ let%test "lexes partial with whitespace control" =
     (Ok
        [
          `WhitespaceControl;
-         `Partial "greeting";
+         `Partial { name = "greeting"; context = None };
          `WhitespaceControl;
+       ])
+
+let%test "lexes partial with context" =
+  make_test "{{> greeting user}}"
+    (Ok
+       [
+         `Partial { name = "greeting"; context = Some (`IdentPath [`Ident "user"]) };
        ])
