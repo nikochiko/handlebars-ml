@@ -21,14 +21,6 @@ type context =
 type custom_helper = literal_or_collection list -> literal_or_collection option
 type custom_helper_lookup_fn = string -> custom_helper option
 
-type builtin_helper_result =
-  | Value of literal_or_collection
-  | ContextList of context list
-
-type builtin_helper =
-  literal_or_collection list -> context -> builtin_helper_result
-
-type helper = Custom of custom_helper | Builtin of builtin_helper
 
 let ( >>= ) = Result.bind
 let ( let* ) = ( >>= )
@@ -176,34 +168,6 @@ let rec eval ctx get_helper (expr : evalable) =
       in
       try_eval exprs
 
-let builtin_helper_each args ctx =
-  match args with
-  | [ `List lst ] ->
-      let contexts =
-        List.mapi
-          (fun i v ->
-            let extras =
-              `Assoc
-                [
-                  ("@index", `Int i);
-                  ("@first", `Bool (i = 0));
-                  ("@last", `Bool (i = List.length lst - 1));
-                ]
-            in
-            make_ctx ~parent_ctx:ctx (WithExtras { v; extras }))
-          lst
-      in
-      ContextList contexts
-  | [ `Assoc lst ] ->
-      let contexts =
-        List.map
-          (fun (k, v) ->
-            let extras = `Assoc [ ("@key", `String k) ] in
-            make_ctx ~parent_ctx:ctx (WithExtras { v; extras }))
-          lst
-      in
-      ContextList contexts
-  | _ -> Value `Null
 
 let default_get_helper name =
   let upper args =

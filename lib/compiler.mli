@@ -37,18 +37,6 @@ type custom_helper = literal_or_collection list -> literal_or_collection option
 (** Function to look up custom helpers by name *)
 type custom_helper_lookup_fn = string -> custom_helper option
 
-(** Result type for builtin helper functions *)
-type builtin_helper_result =
-  | Value of literal_or_collection (** Simple value result *)
-  | ContextList of context list (** List of contexts for iteration helpers *)
-
-(** Builtin helper function type with context access *)
-type builtin_helper = literal_or_collection list -> context -> builtin_helper_result
-
-(** Unified helper type *)
-type helper =
-  | Custom of custom_helper (** User-defined helper *)
-  | Builtin of builtin_helper (** Built-in helper with context access *)
 
 (** Create a context from a value with optional parent *)
 val make_ctx : ?parent_ctx:context -> context_value -> context
@@ -85,8 +73,6 @@ val compile_tokens :
 (** Default helper lookup function with built-in helpers *)
 val default_get_helper : custom_helper_lookup_fn
 
-(** Built-in 'each' helper for iteration *)
-val builtin_helper_each : builtin_helper
 
 (** Main compilation function *)
 val compile :
