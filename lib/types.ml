@@ -1,24 +1,3 @@
-module Print_utils = struct
-  let ocaml_escape c = c |> Char.chr |> Char.escaped
-
-  let escape_ucode = function
-    | (10 | 13 | 9 | 8) as c -> ocaml_escape c (* \n \r \t \b *)
-    | c when c < 0x20 || c >= 127 -> Printf.sprintf "\\u{%04x}" c
-    | c -> ocaml_escape c
-
-  let escape_uchar_in_string u =
-    let code = Uchar.to_int u in
-    match code with 34 -> "\\\"" | _ -> escape_ucode code
-
-  let escape_ustring us =
-    Array.to_seq us
-    |> Seq.fold_left (fun s u -> s ^ escape_uchar_in_string u) ""
-
-  let ustring_printer fprintf fmt (us : Uchar.t array) =
-    let fs = format_of_string "(Ustring \"%s\")" in
-    fprintf fmt fs (escape_ustring us)
-end
-
 type dot_path = [ `OneDot | `TwoDot ] [@@deriving show, eq]
 
 type literal =
@@ -61,14 +40,14 @@ and partial_info = {
 }
 
 and token =
-  [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
+  [ `Comment of string
   | `Escaped of evalable
   | `Unescaped of evalable
   | `Block of block
   | `Partial of partial_info
   | `WhitespaceControl
   | `Whitespace of string
-  | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
+  | `Raw of string ]
 [@@deriving show, eq]
 
 type lex_error = { msg : string; pos : Lexing.position; buf : Sedlexing.lexbuf }

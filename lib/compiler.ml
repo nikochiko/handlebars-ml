@@ -308,8 +308,7 @@ let compile_tokens get_helper get_partial tokens values =
         compile_token_list (compiled_partial :: acc) ctx rest
     | `Whitespace s :: rest -> compile_token_list (s :: acc) ctx rest
     | `Raw s :: rest ->
-        let raw_str = string_of_uchar_array s in
-        compile_token_list (raw_str :: acc) ctx rest
+        compile_token_list (s :: acc) ctx rest
     | `Escaped expr :: rest ->
         let* value = eval ctx get_helper expr in
         let escaped_str = string_of_literal value |> escape_html in

@@ -37,14 +37,14 @@ and partial_info = {
 }
 
 and token =
-  [ `Comment of (Uchar.t array[@printer Print_utils.ustring_printer fprintf])
+  [ `Comment of string
   | `Escaped of evalable
   | `Unescaped of evalable
   | `Block of block
   | `Partial of partial_info
   | `WhitespaceControl
   | `Whitespace of string
-  | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
+  | `Raw of string ]
 [@@deriving show]
 
 type lex_error = { msg : string; pos : Lexing.position; buf : Sedlexing.lexbuf }
