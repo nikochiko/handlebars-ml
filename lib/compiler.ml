@@ -238,6 +238,23 @@ let default_get_helper name =
     | [ `String fmt; `String s ] -> aux fmt s
     | _ -> None
   in
+  let add = function
+    | [ `Int a; `Int b ] -> Some (`Int (a + b))
+    | [ `Float a; `Float b ] -> Some (`Float (a +. b))
+    | [ `Int a; `Float b ] -> Some (`Float (float_of_int a +. b))
+    | [ `Float a; `Int b ] -> Some (`Float (a +. float_of_int b))
+    | _ -> None
+  in
+  let increment = function
+    | [ `Int a ] -> Some (`Int (a + 1))
+    | [ `Float a ] -> Some (`Float (a +. 1.0))
+    | _ -> None
+  in
+  let decrement = function
+    | [ `Int a ] -> Some (`Int (a - 1))
+    | [ `Float a ] -> Some (`Float (a -. 1.0))
+    | _ -> None
+  in
   match name with
   | "upper" -> Some upper
   | "lower" -> Some lower
