@@ -23,13 +23,14 @@ type hb_error = LexError of lex_error | CompileError of compile_error
 
 type hb_result = (string, hb_error) result [@@deriving show]
 
-type context_value =
-  | Simple of literal_or_collection
-  | WithExtras of { v : literal_or_collection; extras : literal_or_collection }
+type context_values = {
+  v : literal_or_collection;
+  extras : literal_or_collection;
+}
 
 type context =
-  | Root of { v : context_value }
-  | Child of { v : context_value; parent : context; root : context }
+  | Root of context_values
+  | Child of { values : context_values; parent : context; root : context }
 
 type custom_helper = literal_or_collection list -> literal_or_collection option
 type custom_helper_lookup_fn = string -> custom_helper option
@@ -38,11 +39,19 @@ type partial_lookup_fn = string -> string option
 let ( >>= ) = Result.bind
 let ( let* ) = ( >>= )
 
-let make_ctx ?parent_ctx v =
+let make_ctx ?parent_ctx ?extras v =
+  let extras_lst = match extras with None -> [] | Some lst -> lst in
+  let extras_lst =
+    match v with
+    | `List l -> ("length", `Int (List.length l)) :: extras_lst
+    | _ -> extras_lst
+  in
+  let values = { v; extras = `Assoc extras_lst } in
   match parent_ctx with
-  | None -> Root { v }
-  | Some (Root _ as root_ctx) -> Child { v; parent = root_ctx; root = root_ctx }
-  | Some (Child { root; _ } as parent) -> Child { v; parent; root }
+  | None -> Root values
+  | Some (Root _ as root_ctx) ->
+      Child { values; parent = root_ctx; root = root_ctx }
+  | Some (Child { root; _ } as parent) -> Child { values; parent; root }
 
 let literal_or_collection_of_literal (lit : literal) : literal_or_collection =
   match lit with
@@ -106,81 +115,52 @@ let escape_html s =
   Buffer.contents b
 
 let lookup ctx segments =
+  let lookup_multi_assoc name v_lst =
+    let lookup_assoc name (v : [> literal_or_collection ]) =
+      match v with `Assoc lst -> List.assoc_opt name lst | _ -> None
+    in
+    let assoc_seq = List.to_seq v_lst in
+    Seq.find_map (lookup_assoc name) assoc_seq
+  in
   let rec aux ctx segments =
-    let v = match ctx with Root { v } -> v | Child { v; _ } -> v in
-    let actual_v =
-      match v with
-      | Simple v -> v
-      | WithExtras { v; extras } -> (
-          match segments with
-          | `Ident name :: _ when String.starts_with ~prefix:"@" name -> (
-              match name with
-              | "@root" -> (
-                  (* Return root context value *)
-                  match ctx with
-                  | Root { v = Simple root_v } -> root_v
-                  | Child { root = Root { v = Simple root_v }; _ } -> root_v
-                  | _ -> `Null)
-              | _ -> extras)
-          | _ -> v)
+    let values =
+      match ctx with Root values -> values | Child { values; _ } -> values
     in
     match segments with
-    | [] -> actual_v
+    | [] ->
+        let { v; _ } = values in
+        v
     | `Ident name :: rest when name = "@root" ->
-        (* Handle @root.property access *)
-        let root_v =
-          match ctx with
-          | Root { v = Simple root_v } -> root_v
-          | Child { root = Root { v = Simple root_v }; _ } -> root_v
-          | _ -> `Null
+        let root_ctx =
+          match ctx with (Root _ as root) | Child { root; _ } -> root
         in
-        let root_ctx = Root { v = Simple root_v } in
         aux root_ctx rest
+    | `Ident name :: rest when name = "." || name = "this" -> aux ctx rest
     | `Ident name :: rest -> (
-        if name = "." || name = "this" then aux ctx rest
-        else
-          match actual_v with
-          | `Assoc lst -> (
-              match List.assoc_opt name lst with
-              | Some next_v ->
-                  let new_parent =
-                    match ctx with
-                    | Root _ as root ->
-                        Child { v = Simple next_v; parent = root; root }
-                    | Child { root; _ } as parent ->
-                        Child { v = Simple next_v; parent; root }
-                  in
-                  aux new_parent rest
-              | None -> `Null)
-          | _ -> `Null)
+        let { v; extras } = values in
+        match lookup_multi_assoc name [ extras; v ] with
+        | Some next_v ->
+            let new_ctx = make_ctx ~parent_ctx:ctx next_v in
+            aux new_ctx rest
+        | None -> `Null)
     | `Index (`String name) :: rest -> (
-        match actual_v with
+        let { v; _ } = values in
+        match v with
         | `Assoc lst -> (
             match List.assoc_opt name lst with
             | Some next_v ->
-                let new_parent =
-                  match ctx with
-                  | Root _ as root ->
-                      Child { v = Simple next_v; parent = root; root }
-                  | Child { root; _ } as parent ->
-                      Child { v = Simple next_v; parent; root }
-                in
-                aux new_parent rest
+                let new_ctx = make_ctx ~parent_ctx:ctx next_v in
+                aux new_ctx rest
             | None -> `Null)
         | _ -> `Null)
     | `Index (`Int idx) :: rest when idx >= 0 -> (
-        match actual_v with
+        let { v; _ } = values in
+        match v with
         | `List lst -> (
             match List.nth_opt lst idx with
             | Some next_v ->
-                let new_parent =
-                  match ctx with
-                  | Root _ as root ->
-                      Child { v = Simple next_v; parent = root; root }
-                  | Child { root; _ } as parent ->
-                      Child { v = Simple next_v; parent; root }
-                in
-                aux new_parent rest
+                let new_ctx = make_ctx ~parent_ctx:ctx next_v in
+                aux new_ctx rest
             | None -> `Null)
         | _ -> `Null)
     | `DotPath `OneDot :: rest -> aux ctx rest
@@ -310,11 +290,9 @@ let compile_tokens get_helper get_partial tokens values =
         in
         compile_token_list [] ctx content_to_use
     | `App ("with", [ context_expr ]) ->
-        let* value = eval ctx get_helper context_expr in
-        let new_ctx = make_ctx ~parent_ctx:ctx (Simple value) in
-        let content_to_use =
-          if is_truthy value then content else else_content
-        in
+        let* v = eval ctx get_helper context_expr in
+        let new_ctx = make_ctx ~parent_ctx:ctx v in
+        let content_to_use = if is_truthy v then content else else_content in
         compile_token_list [] new_ctx content_to_use
     | `App ("each", [ iterable_expr ]) -> (
         let* value = eval ctx get_helper iterable_expr in
@@ -324,16 +302,13 @@ let compile_tokens get_helper get_partial tokens values =
           | `List lst ->
               let compile_for_each i v =
                 let extras =
-                  `Assoc
-                    [
-                      ("@index", `Int i);
-                      ("@first", `Bool (i = 0));
-                      ("@last", `Bool (i = List.length lst - 1));
-                    ]
+                  [
+                    ("@index", `Int i);
+                    ("@first", `Bool (i = 0));
+                    ("@last", `Bool (i = List.length lst - 1));
+                  ]
                 in
-                let item_ctx =
-                  make_ctx ~parent_ctx:ctx (WithExtras { v; extras })
-                in
+                let item_ctx = make_ctx ~parent_ctx:ctx ~extras v in
                 compile_token_list [] item_ctx content
               in
               let* all_compiled =
@@ -348,10 +323,8 @@ let compile_tokens get_helper get_partial tokens values =
               Ok (List.rev all_compiled |> String.concat "")
           | `Assoc lst ->
               let compile_for_each (k, v) =
-                let extras = `Assoc [ ("@key", `String k) ] in
-                let item_ctx =
-                  make_ctx ~parent_ctx:ctx (WithExtras { v; extras })
-                in
+                let extras = [ ("@key", `String k) ] in
+                let item_ctx = make_ctx ~parent_ctx:ctx ~extras v in
                 compile_token_list [] item_ctx content
               in
               let* all_compiled =
@@ -365,16 +338,11 @@ let compile_tokens get_helper get_partial tokens values =
               in
               Ok (List.rev all_compiled |> String.concat "")
           | _ -> compile_token_list [] ctx else_content)
-    | other_expr ->
-        let* value = eval ctx get_helper other_expr in
-        let content_to_use =
-          if is_truthy value then content else else_content
-        in
-        let new_ctx =
-          if is_truthy value then make_ctx ~parent_ctx:ctx (Simple value)
-          else ctx
-        in
-        compile_token_list [] new_ctx content_to_use
+    | other_expr -> (
+        let* v = eval ctx get_helper other_expr in
+        match is_truthy v with
+        | true -> compile_token_list [] (make_ctx ~parent_ctx:ctx v) content
+        | false -> compile_token_list [] ctx else_content)
   and compile_partial name context_opt hash_args ctx =
     match get_partial name with
     | None -> Error (Missing_partial name)
@@ -384,8 +352,8 @@ let compile_tokens get_helper get_partial tokens values =
           match context_opt with
           | None -> Ok ctx (* inherit current context *)
           | Some context_expr ->
-              let* context_value = eval ctx get_helper context_expr in
-              Ok (make_ctx ~parent_ctx:ctx (Simple context_value))
+              let* v = eval ctx get_helper context_expr in
+              Ok (make_ctx ~parent_ctx:ctx v)
         in
         (* Evaluate hash arguments and add them to context *)
         let* partial_ctx_with_hash =
@@ -402,32 +370,22 @@ let compile_tokens get_helper get_partial tokens values =
             in
             let hash_values = List.rev hash_values in
             (* Merge hash arguments with context *)
-            let current_context_value =
-              match partial_ctx with Root { v } -> v | Child { v; _ } -> v
-            in
-            let merged_context_value =
-              match current_context_value with
-              | Simple (`Assoc existing_pairs) ->
-                  (* Merge hash arguments with existing context properties, with hash args taking precedence *)
-                  Simple (`Assoc (hash_values @ existing_pairs))
-              | Simple _ ->
-                  (* Create new context with just hash args *)
-                  Simple (`Assoc hash_values)
-              | WithExtras { v = `Assoc existing_pairs; extras } ->
-                  (* Preserve extras (like @index, @key) and merge hash args with existing pairs *)
-                  WithExtras
-                    { v = `Assoc (hash_values @ existing_pairs); extras }
-              | WithExtras { v = _; extras } ->
-                  (* Create new context with hash args, preserve extras *)
-                  WithExtras { v = `Assoc hash_values; extras }
-            in
-            let updated_ctx =
+            let values =
               match partial_ctx with
-              | Root _ -> Root { v = merged_context_value }
-              | Child { parent; root; _ } ->
-                  Child { v = merged_context_value; parent; root }
+              | Root values -> values
+              | Child { values; _ } -> values
             in
-            Ok updated_ctx
+            let { v; extras } = values in
+            let new_extras =
+              match extras with
+              | `Assoc lst -> hash_values @ lst
+              (* TODO: not happy with runtime error for this *)
+              | _ -> failwith "extras should always be assoc"
+            in
+            let new_ctx =
+              make_ctx ~parent_ctx:partial_ctx ~extras:new_extras v
+            in
+            Ok new_ctx
         in
         (* Parse and compile the partial template *)
         let lexbuf =
@@ -442,7 +400,8 @@ let compile_tokens get_helper get_partial tokens values =
             | Error e -> Error (Partial_compile_error (name, e))
             | Ok result -> Ok result))
   in
-  compile_token_list [] (make_ctx (Simple values)) tokens
+  let ctx = make_ctx values in
+  compile_token_list [] ctx tokens
 
 let compile ?(get_helper = default_get_helper)
     ?(get_partial = default_get_partial) template values =

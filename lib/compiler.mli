@@ -22,16 +22,16 @@ type hb_error =
 type hb_result = (string, hb_error) result [@@deriving show]
 (** Result type for complete handlebars processing *)
 
-(** Context value wrapper for template variables *)
-type context_value =
-  | Simple of literal_or_collection  (** Simple value without extras *)
-  | WithExtras of { v : literal_or_collection; extras : literal_or_collection }
-      (** Value with additional context data (@index, @key, etc.) *)
+type context_values = {
+  v : literal_or_collection;
+  extras : literal_or_collection;
+}
+(** Context values for template variables + injected extras *)
 
 (** Template execution context with parent chain *)
 type context =
-  | Root of { v : context_value }  (** Root context *)
-  | Child of { v : context_value; parent : context; root : context }
+  | Root of context_values  (** Root context *)
+  | Child of { values : context_values; parent : context; root : context }
       (** Child context with parent and root reference *)
 
 type custom_helper = literal_or_collection list -> literal_or_collection option
@@ -43,14 +43,12 @@ type custom_helper_lookup_fn = string -> custom_helper option
 type partial_lookup_fn = string -> string option
 (** Function to look up partial templates by name *)
 
-val make_ctx : ?parent_ctx:context -> context_value -> context
+val make_ctx :
+  ?parent_ctx:context ->
+  ?extras:(string * literal_or_collection) List.t ->
+  literal_or_collection ->
+  context
 (** Create a context from a value with optional parent *)
-
-val literal_or_collection_of_literal : literal -> literal_or_collection
-(** Convert a literal to literal_or_collection *)
-
-val is_truthy : literal_or_collection -> bool
-(** Check if a value is considered truthy in handlebars semantics *)
 
 val lookup : context -> ident_path_segment list -> literal_or_collection
 (** Look up a value in context using an identifier path, returns `Null if not
@@ -90,11 +88,3 @@ val compile :
   literal_or_collection ->
   hb_result
 (** Main compilation function *)
-
-val trim_left : Uchar.t array -> Uchar.t array
-(** Utility functions for whitespace control *)
-
-val trim_right : Uchar.t array -> Uchar.t array
-
-val is_space : Uchar.t -> bool
-(** Helper to check if a character is whitespace *)
