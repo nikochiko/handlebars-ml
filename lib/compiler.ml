@@ -201,6 +201,7 @@ let rec eval ctx get_helper (expr : evalable) =
       in
       try_eval exprs
 
+(* TODO: support hash-arguments *)
 let default_get_helper name =
   let upper args =
     match args with
@@ -228,16 +229,32 @@ let default_get_helper name =
     let s = printables |> List.map string_of_literal |> String.concat "" in
     Some (`String s)
   in
-  let removeProtocol = function
+  let eq = function [ a; b ] -> Some (`Bool (a = b)) | _ -> None in
+  let not_ = function
+    | [ any ] -> Some (`Bool (not (is_truthy any)))
+    | _ -> None
+  in
+  let remove_protocol = function
     | [ `String url ] ->
         let re = Str.regexp "^https?://" in
         let stripped = Str.replace_first re "" url in
         Some (`String stripped)
     | _ -> None
   in
-  let eq = function [ a; b ] -> Some (`Bool (a = b)) | _ -> None in
-  let not_ = function
-    | [ any ] -> Some (`Bool (not (is_truthy any)))
+  let format_date args =
+    let aux fmt s =
+      let open ISO8601.Permissive in
+      try
+        let dt, maybe_tz = datetime_tz ~reqtime:false s in
+        let tz = match maybe_tz with None -> 0. | Some tz -> tz in
+        pp_format Format.str_formatter fmt dt tz;
+        Some (`String (Format.flush_str_formatter ()))
+      with Failure _ ->
+        None (* TODO: better error handling? let the user know *)
+    in
+    match args with
+    | [ `String s ] -> aux "%Y-%M-%D" s
+    | [ `String fmt; `String s ] -> aux fmt s
     | _ -> None
   in
   match name with
@@ -245,9 +262,10 @@ let default_get_helper name =
   | "lower" -> Some lower
   | "length" -> Some length
   | "concat" -> Some concat
-  | "removeProtocol" -> Some removeProtocol
   | "eq" -> Some eq
   | "not" -> Some not_
+  | "remove_protocol" -> Some remove_protocol
+  | "format_date" -> Some format_date
   | _ -> None
 
 let default_get_partial _name = None
@@ -852,3 +870,67 @@ let%test "partial with 'this'" =
   in
   let values = `Assoc [ ("items", `List [ `String "A"; `String "B" ]) ] in
   make_test ~get_partial template values (Ok "Item: A Item: B ")
+
+let%test "helper function: upper and lower: OK case" =
+  let template = "{{upper name}} and {{lower name}}" in
+  let values = `Assoc [ ("name", `String "Test") ] in
+  make_test template values (Ok "TEST and test")
+
+let%test "helper function: length: OK case" =
+  let template = "Length: {{length text}}, Items: {{length items}}" in
+  let values =
+    `Assoc
+      [
+        ("text", `String "hello");
+        ("items", `List [ `String "a"; `String "b"; `String "c" ]);
+      ]
+  in
+  make_test template values (Ok "Length: 5, Items: 3")
+
+let%test "helper function: concat: OK case" =
+  let template = "{{concat part1 part2 part3}}" in
+  let values =
+    `Assoc
+      [
+        ("part1", `String "Hello, ");
+        ("part2", `String "World");
+        ("part3", `String "!");
+      ]
+  in
+  make_test template values (Ok "Hello, World!")
+
+let%test "helper function: eq: OK case" =
+  let template = "{{#if (eq val1 val2)}}Equal{{else}}Not Equal{{/if}}" in
+  let values = `Assoc [ ("val1", `Int 10); ("val2", `Int 10) ] in
+  make_test template values (Ok "Equal")
+
+let%test "helper function: not: OK case" =
+  let template = "{{#if (not condition)}}False{{else}}True{{/if}}" in
+  let values = `Assoc [ ("condition", `Bool false) ] in
+  make_test template values (Ok "False")
+
+let%test "helper function: remove_protocol: OK case" =
+  let template = "{{remove_protocol url}}" in
+  let values = `Assoc [ ("url", `String "https://example.com") ] in
+  make_test template values (Ok "example.com")
+
+let%test "helper function: format_date: OK case" =
+  let template = "{{format_date \"%Y-%M-%D\" date}}" in
+  let values = `Assoc [ ("date", `String "2024-06-15T12:34:56Z") ] in
+  make_test template values (Ok "2024-06-15")
+
+let%test "helper function: format_date without format: OK case" =
+  let template = "{{format_date date}}" in
+  let values = `Assoc [ ("date", `String "2024-06-15T12:34:56Z") ] in
+  make_test template values (Ok "2024-06-15")
+
+let%test "helper function: format_date with invalid date: should return empty" =
+  let template = "{{format_date \"%Y-%M-%D\" date}}" in
+  let values = `Assoc [ ("date", `String "invalid-date") ] in
+  make_test template values (Ok "")
+
+let%test "helper function: format_date with invalid format: should return empty"
+    =
+  let template = "{{format_date \"%Q\" date}}" in
+  let values = `Assoc [ ("date", `String "2024-06-15T12:34:56Z") ] in
+  make_test template values (Ok "")

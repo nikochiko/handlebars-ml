@@ -21,7 +21,8 @@
  (description "A longer description")
  (depends ocaml
           (sedlex (>= 3.6))
-          yojson)
+          yojson
+          ISO8601)
  (tags
   ("add topics" "to describe" your project)))
 
