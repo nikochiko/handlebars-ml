@@ -511,12 +511,13 @@ let make_test input expected =
 
 let%test "lexes template with escaped chars" =
   make_test "hello \\{{world}}"
-    (Ok [
-      `Raw (uchar_array_of_string "hello");
-      `Whitespace " ";
-      `Raw (uchar_array_of_string "{{");
-      `Raw (uchar_array_of_string "world}}");
-    ])
+    (Ok
+       [
+         `Raw (uchar_array_of_string "hello");
+         `Whitespace " ";
+         `Raw (uchar_array_of_string "{{");
+         `Raw (uchar_array_of_string "world}}");
+       ])
 
 let%test "lexes template with substitution block" =
   make_test "hello, {{world}}"
