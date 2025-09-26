@@ -67,6 +67,7 @@ and token =
   | `Block of block
   | `Partial of partial_info
   | `WhitespaceControl
+  | `Whitespace of string
   | `Raw of (Uchar.t array[@printer Print_utils.ustring_printer fprintf]) ]
 [@@deriving show, eq]
 

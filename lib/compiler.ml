@@ -72,25 +72,6 @@ let is_truthy = function
       false
   | _ -> true
 
-let is_space c =
-  match Uchar.to_char c with
-  | ' ' | '\012' | '\t' | '\r' | '\n' -> true
-  | _ -> false
-
-let trim_left c_arr =
-  let i = ref 0 in
-  while !i < Array.length c_arr && is_space c_arr.(!i) do
-    incr i
-  done;
-  Array.sub c_arr !i (Array.length c_arr - !i)
-
-let trim_right c_arr =
-  let i = ref (Array.length c_arr - 1) in
-  while !i >= 0 && is_space c_arr.(!i) do
-    decr i
-  done;
-  Array.sub c_arr 0 (!i + 1)
-
 let string_of_literal (lit : literal_or_collection) : string =
   match lit with
   | `String s -> s
@@ -201,7 +182,7 @@ let rec eval ctx get_helper (expr : evalable) =
       in
       try_eval exprs
 
-(* TODO: support hash-arguments *)
+(* TODO: support hash-arguments for helpers *)
 let default_get_helper name =
   let upper args =
     match args with
@@ -266,22 +247,49 @@ let default_get_helper name =
   | "not" -> Some not_
   | "remove_protocol" -> Some remove_protocol
   | "format_date" -> Some format_date
+  | "add" -> Some add
+  | "increment" -> Some increment
+  | "decrement" -> Some decrement
   | _ -> None
 
 let default_get_partial _name = None
+
+let apply_indent s indent =
+  if indent <= 0 then s
+  else
+    let indentation = String.make indent ' ' in
+    let lines = String.split_on_char '\n' s in
+    let len = List.length lines in
+    lines
+    |> List.mapi (fun i line ->
+           if (i = len - 1 && line = "") || i = 0 then line
+           else indentation ^ line)
+    |> String.concat "\n"
 
 let compile_tokens get_helper get_partial tokens values =
   let rec compile_token_list acc ctx tokens =
     match tokens with
     | [] -> Ok (List.rev acc |> String.concat "")
-    | `Comment _ :: rest -> compile_token_list acc ctx rest
-    | `WhitespaceControl :: `Raw s :: rest ->
-        let trimmed = trim_left s in
-        compile_token_list acc ctx (`Raw trimmed :: rest)
-    | `Raw s :: `WhitespaceControl :: rest ->
-        let trimmed = trim_right s |> string_of_uchar_array in
-        compile_token_list (trimmed :: acc) ctx rest
-    | `WhitespaceControl :: rest -> compile_token_list acc ctx rest
+    | `Comment _ :: rest
+    | `WhitespaceControl :: `Whitespace _ :: rest
+    | `Whitespace _ :: `WhitespaceControl :: rest
+    | `WhitespaceControl :: rest ->
+        compile_token_list acc ctx rest
+    | `Whitespace s :: `Partial { name; context; hash_args } :: rest ->
+        (* preserve indentation for partials *)
+        let indent =
+          match String.rindex_opt s '\n' with
+          | None -> 0
+          | Some idx -> String.length s - idx - 1
+        in
+        let* compiled_partial =
+          compile_partial ~indent name context hash_args ctx
+        in
+        compile_token_list (compiled_partial :: s :: acc) ctx rest
+    | `Partial { name; context; hash_args } :: rest ->
+        let* compiled_partial = compile_partial name context hash_args ctx in
+        compile_token_list (compiled_partial :: acc) ctx rest
+    | `Whitespace s :: rest -> compile_token_list (s :: acc) ctx rest
     | `Raw s :: rest ->
         let raw_str = string_of_uchar_array s in
         compile_token_list (raw_str :: acc) ctx rest
@@ -296,9 +304,6 @@ let compile_tokens get_helper get_partial tokens values =
     | `Block { expr; content; else_content } :: rest ->
         let* compiled_block = compile_block expr content else_content ctx in
         compile_token_list (compiled_block :: acc) ctx rest
-    | `Partial { name; context; hash_args } :: rest ->
-        let* compiled_partial = compile_partial name context hash_args ctx in
-        compile_token_list (compiled_partial :: acc) ctx rest
   and compile_block expr content else_content ctx =
     match expr with
     | `App ("if", [ condition ]) ->
@@ -361,7 +366,7 @@ let compile_tokens get_helper get_partial tokens values =
         match is_truthy v with
         | true -> compile_token_list [] (make_ctx ~parent_ctx:ctx v) content
         | false -> compile_token_list [] ctx else_content)
-  and compile_partial name context_opt hash_args ctx =
+  and compile_partial ?(indent = 0) name context_opt hash_args ctx =
     match get_partial name with
     | None -> Error (Missing_partial name)
     | Some partial_template -> (
@@ -416,7 +421,7 @@ let compile_tokens get_helper get_partial tokens values =
               compile_token_list [] partial_ctx_with_hash partial_tokens
             with
             | Error e -> Error (Partial_compile_error (name, e))
-            | Ok result -> Ok result))
+            | Ok compiled -> Ok (apply_indent compiled indent)))
   in
   let ctx = make_ctx values in
   compile_token_list [] ctx tokens
@@ -934,3 +939,26 @@ let%test "helper function: format_date with invalid format: should return empty"
   let template = "{{format_date \"%Q\" date}}" in
   let values = `Assoc [ ("date", `String "2024-06-15T12:34:56Z") ] in
   make_test template values (Ok "")
+
+let%test "preserves indentation in partial" =
+  let template = "Items:\n  {{> item-list items}}" in
+  let get_partial name =
+    match name with
+    | "item-list" -> Some "{{#each this}}- {{this}}\n{{/each}}"
+    | _ -> None
+  in
+  let values = `Assoc [ ("items", `List [ `String "A"; `String "B" ]) ] in
+  let expected = "Items:\n  - A\n  - B\n" in
+  make_test ~get_partial template values (Ok expected)
+
+let%test "preserves indentation when partials are chained" =
+  let template = "List:\n  {{> item-list items}}" in
+  let get_partial name =
+    match name with
+    | "item-list" -> Some "{{#each this}}{{> item-view}}{{/each}}"
+    | "item-view" -> Some "- Item {{@index}}: {{this}}\n"
+    | _ -> None
+  in
+  let values = `Assoc [ ("items", `List [ `String "A"; `String "B" ]) ] in
+  let expected = "List:\n  - Item 0: A\n  - Item 1: B\n" in
+  make_test ~get_partial template values (Ok expected)

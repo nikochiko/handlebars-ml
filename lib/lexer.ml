@@ -73,20 +73,6 @@ let rec string_of_evalable (evalable : evalable) =
   | `WhateverMakesSense exprs -> string_of_evalable (List.hd exprs)
   | `Literal l -> show_literal l
 
-let norm tokens =
-  let normed, last =
-    tokens
-    |> List.fold_left
-         (fun (acc, cur) token ->
-           match token with
-           | `Raw c_arr -> (acc, Array.append cur c_arr)
-           | _ ->
-               if Array.length cur > 0 then (acc @ [ `Raw cur; token ], [||])
-               else (acc @ [ token ], [||]))
-         ([], [||])
-  in
-  if Array.length last > 0 then normed @ [ `Raw last ] else normed
-
 let mkerr msg buf : lex_error =
   let pos = lexing_position_curr buf in
   { msg; pos; buf }
@@ -146,12 +132,16 @@ let rec lex ?(container = Root []) buf : lex_result =
       let token = `Raw (lexeme buf |> drop_left 1) in
       lex ~container:(add_token container token) buf
   | templ_open -> lex_templ ~container buf
-  | Plus (Compl ('\\' | '{')) | any ->
+  | Plus white_space ->
+      let token = lexeme buf |> string_of_uchar_array in
+      let container = add_token container (`Whitespace token) in
+      lex ~container buf
+  | Plus (Compl ('\\' | '{' | white_space)) ->
       let container = add_token container (`Raw (lexeme buf)) in
       lex ~container buf
   | eof -> (
       match container with
-      | Root acc -> Ok (norm acc)
+      | Root acc -> Ok acc
       | Child { block; _ } | ElseChild { block; _ } ->
           let expected_close = mk_closing_path block.expr in
           let msg =
@@ -521,13 +511,19 @@ let make_test input expected =
 
 let%test "lexes template with escaped chars" =
   make_test "hello \\{{world}}"
-    (Ok [ `Raw (uchar_array_of_string "hello {{world}}") ])
+    (Ok [
+      `Raw (uchar_array_of_string "hello");
+      `Whitespace " ";
+      `Raw (uchar_array_of_string "{{");
+      `Raw (uchar_array_of_string "world}}");
+    ])
 
 let%test "lexes template with substitution block" =
   make_test "hello, {{world}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `Escaped
            (`WhateverMakesSense
               [ `App ("world", []); `IdentPath [ `Ident "world" ] ]);
@@ -537,7 +533,8 @@ let%test "lexes template with substitution block and strip before" =
   make_test "hello, {{~world}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`WhateverMakesSense
@@ -548,7 +545,8 @@ let%test "lexes template with substitution block and strip before + after" =
   make_test "hello, {{~ world ~}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`WhateverMakesSense
@@ -560,7 +558,8 @@ let%test "lexes template substitution block with nested ident" =
   make_test "hello, {{~a.b.c}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ]);
        ])
@@ -569,7 +568,8 @@ let%test "lexes template substitution block with dot path" =
   make_test "hello, {{~.././a.b.c }}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`IdentPath
@@ -586,7 +586,8 @@ let%test "lexes parenthesis expressions" =
   make_test "hello, {{~(fncall a.b.c)}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`App
@@ -597,7 +598,8 @@ let%test "lexes substitution with indexing" =
   make_test "hello, {{~a.['world'] }}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped (`IdentPath [ `Ident "a"; `Index (`String "world") ]);
        ])
@@ -606,7 +608,8 @@ let%test "lexes nested fn calls and primitive literals" =
   make_test "hello, {{~fncall a.b.c (fn2 1 2.3) }}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`App
@@ -621,9 +624,11 @@ let%test "lexes comments" =
   make_test "hello, {{! this is a comment }} world"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `Comment (uchar_array_of_string " this is a comment ");
-         `Raw (uchar_array_of_string " world");
+         `Whitespace " ";
+         `Raw (uchar_array_of_string "world");
        ])
 
 let%test "lexes comments containing mustache syntax" =
@@ -636,18 +641,23 @@ let%test "lexes comments containing mustache syntax" =
   |}
     (Ok
        [
-         `Raw (uchar_array_of_string "\n    hello, ");
+         `Whitespace "\n    ";
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `Comment
            (uchar_array_of_string
               "\n      {{# this is a\n        multiline comment }}\n    ");
-         `Raw (uchar_array_of_string " world\n  ");
+         `Whitespace " ";
+         `Raw (uchar_array_of_string "world");
+         `Whitespace "\n  ";
        ])
 
 let%test "lexes unescaped substitution" =
   make_test "hello, {{~{ a.b.c }}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Unescaped (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ]);
        ])
@@ -661,7 +671,8 @@ let%test "lexes fn application without parenthesis" =
   make_test "hello, {{~fn a.b.c}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`App ("fn", [ `IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ] ]));
@@ -671,17 +682,24 @@ let%test "lexes literal-looking values correctly" =
   make_test "hello, {{~true}} and {{~false}} and substitute {{true_looking}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`WhateverMakesSense
               [ `App ("true", []); `IdentPath [ `Ident "true" ] ]);
-         `Raw (uchar_array_of_string " and ");
+         `Whitespace " ";
+         `Raw (uchar_array_of_string "and");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`WhateverMakesSense
               [ `App ("false", []); `IdentPath [ `Ident "false" ] ]);
-         `Raw (uchar_array_of_string " and substitute ");
+         `Whitespace " ";
+         `Raw (uchar_array_of_string "and");
+         `Whitespace " ";
+         `Raw (uchar_array_of_string "substitute");
+         `Whitespace " ";
          `Escaped
            (`WhateverMakesSense
               [
@@ -693,7 +711,8 @@ let%test "lexes StripAfter in unescaped substitution" =
   make_test "hello, {{~{ a.b.c }~}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Unescaped (`IdentPath [ `Ident "a"; `Ident "b"; `Ident "c" ]);
          `WhitespaceControl;
@@ -703,7 +722,8 @@ let%test "lexes else block" =
   make_test "hello, {{#if a}}yes{{else}}no{{/if}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `Block
            {
              expr = `App ("if", [ `IdentPath [ `Ident "a" ] ]);
@@ -716,7 +736,8 @@ let%test "lexes else looking things as something else" =
   make_test "hello, {{~else1}}"
     (Ok
        [
-         `Raw (uchar_array_of_string "hello, ");
+         `Raw (uchar_array_of_string "hello,");
+         `Whitespace " ";
          `WhitespaceControl;
          `Escaped
            (`WhateverMakesSense
@@ -787,37 +808,37 @@ let%test "lexes example 1 from handlebarsjs docs" =
   make_test input
     (Ok
        [
-         `Raw (uchar_array_of_string "\n");
+         `Whitespace "\n";
          `Block
            {
              expr = `App ("with", [ `IdentPath [ `Ident "person" ] ]);
              content =
                [
-                 `Raw (uchar_array_of_string "\n");
+                 `Whitespace "\n";
                  `Escaped
                    (`WhateverMakesSense
                       [
                         `App ("firstname", []);
                         `IdentPath [ `Ident "firstname" ];
                       ]);
-                 `Raw (uchar_array_of_string " ");
+                 `Whitespace " ";
                  `Escaped
                    (`WhateverMakesSense
                       [
                         `App ("lastname", []); `IdentPath [ `Ident "lastname" ];
                       ]);
-                 `Raw (uchar_array_of_string "\n");
+                 `Whitespace "\n";
                ];
              else_content = [];
            };
-         `Raw (uchar_array_of_string "\n");
+         `Whitespace "\n";
        ])
 
 let%test "lexes literal string as key for substitution" =
   make_test {| {{#with obj}}{{ "key" }}{{/with}} |}
     (Ok
        [
-         `Raw (uchar_array_of_string " ");
+         `Whitespace " ";
          `Block
            {
              expr = `App ("with", [ `IdentPath [ `Ident "obj" ] ]);
@@ -829,14 +850,14 @@ let%test "lexes literal string as key for substitution" =
                ];
              else_content = [];
            };
-         `Raw (uchar_array_of_string " ");
+         `Whitespace " ";
        ])
 
 let%test "lexes literal int as index for substitution" =
   make_test {| {{#with arr}}{{ 0 }}{{/with}} |}
     (Ok
        [
-         `Raw (uchar_array_of_string " ");
+         `Whitespace " ";
          `Block
            {
              expr = `App ("with", [ `IdentPath [ `Ident "arr" ] ]);
@@ -848,14 +869,14 @@ let%test "lexes literal int as index for substitution" =
                ];
              else_content = [];
            };
-         `Raw (uchar_array_of_string " ");
+         `Whitespace " ";
        ])
 
 let%test "lexes multiple index arguments" =
   make_test {| {{#with arr}}{{concat [0] [1] "two"}}{{/with}} |}
     (Ok
        [
-         `Raw (uchar_array_of_string " ");
+         `Whitespace " ";
          `Block
            {
              expr = `App ("with", [ `IdentPath [ `Ident "arr" ] ]);
@@ -872,14 +893,15 @@ let%test "lexes multiple index arguments" =
                ];
              else_content = [];
            };
-         `Raw (uchar_array_of_string " ");
+         `Whitespace " ";
        ])
 
 let%test "lexes basic partial syntax" =
   make_test "Hello {{> greeting}}!"
     (Ok
        [
-         `Raw (uchar_array_of_string "Hello ");
+         `Raw (uchar_array_of_string "Hello");
+         `Whitespace " ";
          `Partial { name = "greeting"; context = None; hash_args = [] };
          `Raw (uchar_array_of_string "!");
        ])
