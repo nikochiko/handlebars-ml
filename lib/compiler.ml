@@ -255,12 +255,19 @@ let default_get_helper name =
         Some (`String stripped)
     | _ -> None
   in
+  let eq = function [ a; b ] -> Some (`Bool (a = b)) | _ -> None in
+  let not_ = function
+    | [ any ] -> Some (`Bool (not (is_truthy any)))
+    | _ -> None
+  in
   match name with
   | "upper" -> Some upper
   | "lower" -> Some lower
   | "length" -> Some length
   | "concat" -> Some concat
   | "removeProtocol" -> Some removeProtocol
+  | "eq" -> Some eq
+  | "not" -> Some not_
   | _ -> None
 
 let default_get_partial _name = None
