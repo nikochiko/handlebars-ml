@@ -179,6 +179,10 @@ and lex_templ ~container buf : lex_result =
             else container
           in
           lex ~container buf)
+  | "!--" ->
+      let* comment, buf = lex_in_mustache_comment buf in
+      let container = add_token container (`Comment comment) in
+      lex ~container buf
   | '!' ->
       let* comment, buf = lex_in_comment buf in
       let container = add_token container (`Comment comment) in
@@ -284,6 +288,15 @@ and lex_in_comment buf =
   let rec aux acc buf =
     match%sedlex buf with
     | templ_close -> Ok (acc, buf)
+    | any -> aux (Array.append acc (lexeme buf)) buf
+    | _ -> Error (mkerr "expected template close" buf)
+  in
+  aux [||] buf
+
+and lex_in_mustache_comment buf =
+  let rec aux acc buf =
+    match%sedlex buf with
+    | "--", templ_close -> Ok (acc, buf)
     | any -> aux (Array.append acc (lexeme buf)) buf
     | _ -> Error (mkerr "expected template close" buf)
   in
@@ -611,6 +624,23 @@ let%test "lexes comments" =
          `Raw (uchar_array_of_string "hello, ");
          `Comment (uchar_array_of_string " this is a comment ");
          `Raw (uchar_array_of_string " world");
+       ])
+
+let%test "lexes comments containing mustache syntax" =
+  make_test
+    {|
+    hello, {{!--
+      {{# this is a
+        multiline comment }}
+    --}} world
+  |}
+    (Ok
+       [
+         `Raw (uchar_array_of_string "\n    hello, ");
+         `Comment
+           (uchar_array_of_string
+              "\n      {{# this is a\n        multiline comment }}\n    ");
+         `Raw (uchar_array_of_string " world\n  ");
        ])
 
 let%test "lexes unescaped substitution" =

@@ -137,7 +137,7 @@ let lookup ctx segments =
         let root_ctx = Root { v = Simple root_v } in
         aux root_ctx rest
     | `Ident name :: rest -> (
-        if name = "." then aux ctx rest
+        if name = "." || name = "this" then aux ctx rest
         else
           match actual_v with
           | `Assoc lst -> (
@@ -884,3 +884,12 @@ let%test "partial with hash args inherits loop context variables" =
   in
   let values = `Assoc [ ("items", `List [ `String "A"; `String "B" ]) ] in
   make_test ~get_partial template values (Ok "0: Item1: Item")
+
+let%test "partial with 'this'" =
+  (* Test: partials can use 'this' to refer to current context value *)
+  let template = "{{#each items}}{{> item-card this}} {{/each}}" in
+  let get_partial name =
+    match name with "item-card" -> Some "Item: {{this}}" | _ -> None
+  in
+  let values = `Assoc [ ("items", `List [ `String "A"; `String "B" ]) ] in
+  make_test ~get_partial template values (Ok "Item: A Item: B ")
