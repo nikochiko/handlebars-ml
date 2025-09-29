@@ -33,10 +33,12 @@ type block = {
   else_content : token list;
 }
 
+and hash_arg = string * evalable
+
 and partial_info = {
   name : string;
   context : evalable option;
-  hash_args : (string * evalable) list;
+  hash_args : hash_arg list;
 }
 
 and token =
