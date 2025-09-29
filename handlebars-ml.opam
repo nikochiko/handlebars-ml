@@ -12,7 +12,6 @@ bug-reports: "https://github.com/nikochiko/handlebars-ml/issues"
 depends: [
   "dune" {>= "3.18"}
   "ocaml"
-  "sedlex" {>= "3.6"}
   "yojson"
   "ISO8601"
   "odoc" {with-doc}

@@ -179,8 +179,8 @@ let main () =
   | Ok result ->
       print_string result;
       exit 0
-  | Error (LexError err) ->
-      error_and_exit ("Lexer error: " ^ (Handlebars_ml.Types.show_lex_error err)) 4
+  | Error (ParseError err) ->
+      error_and_exit ("Parsing error: " ^ (Handlebars_ml.Parser.show_parse_error err)) 4
   | Error (CompileError err) ->
       error_and_exit ("Compile error: " ^ (show_compile_error err)) 4
 

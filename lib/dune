@@ -1,6 +1,10 @@
+(ocamllex
+ (modules handlebars_lexer))
+
 (library
  (name handlebars_ml)
- (modules types lexer compiler)
- (libraries sedlex yojson str ISO8601)
+ (modules types compiler handlebars_lexer parser)
+ (libraries yojson str ISO8601)
  (inline_tests)
- (preprocess (pps ppx_inline_test sedlex.ppx ppx_deriving.show ppx_deriving.eq)))
+ (preprocess
+  (pps ppx_inline_test ppx_deriving.show ppx_deriving.eq)))

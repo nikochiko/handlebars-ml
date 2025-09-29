@@ -1,4 +1,5 @@
 (lang dune 3.18)
+(using menhir 3.0)
 
 (name handlebars-ml)
 
@@ -13,17 +14,16 @@
 
 (license MIT)
 
-(documentation https://url/to/documentation)
+(documentation https://github.com/nikochiko/handlebars-ml)
 
 (package
  (name handlebars-ml)
  (synopsis "Handlebars templating for OCaml")
- (description "A longer description")
+ (description "OCaml port of the Handlebars.js templating engine")
  (depends ocaml
-          (sedlex (>= 3.6))
           yojson
           ISO8601)
  (tags
-  ("add topics" "to describe" your project)))
+  ("handlebars" "template")))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html
