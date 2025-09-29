@@ -25,6 +25,7 @@ type token =
   | IDENT_PATH of ident_path_segment list
   | COMMENT
   | LITERAL of Yojson.Basic.t
+  | START_HASH_ARG of string
   | LPAREN
   | RPAREN
   | EOF
@@ -78,18 +79,26 @@ and lex_in_templ = parse
   | string_literal { LITERAL (`String s) }
   | int_literal as s { LITERAL (`Int (int_of_string s)) }
   | float_literal as s { LITERAL (`Float (float_of_string s)) }
+  | (ident as s) ws_or_nl* '=' { START_HASH_ARG s }
+  | '[' { lex_as_hash_arg_or_nested_index_path (lex_index lexbuf) lexbuf }
   | ident as s { lex_nested_path [IDENT s] lexbuf }
-  | '[' { lex_nested_path [lex_index lexbuf] lexbuf }
   | '.' { IDENT_PATH [ONEDOT] }
   | ".." { IDENT_PATH [TWODOT] }
   | _ { failwith ("unexpected token: " ^ lexeme lexbuf) }
   | eof { failwith "unexpected EOF" }
+and lex_as_hash_arg_or_nested_index_path first_segment = parse
+  | ws_or_nl* '=' {
+      START_HASH_ARG (match first_segment with
+        | `String s -> s
+        | `Int i -> string_of_int i)
+    }
+  | "" { lex_nested_path [INDEX first_segment] lexbuf }
 and lex_index = parse
-  | int_literal as s ']' { INDEX (`Int (int_of_string s)) }
-  | "" { lex_index_wildly (Buffer.create 64) lexbuf }
+  | (int_literal as s) ']' { `Int (int_of_string s) }
+  | "" { `String (lex_index_wildly (Buffer.create 64) lexbuf) }
 and lex_index_wildly buf = parse
-  | '\\' (_ as c) { Buffer.add_char buf c; lex_index_wildly buf lexbuf }
-  | ']' { INDEX (`String (Buffer.contents buf)) }
+  | '\\' (']' as c) { Buffer.add_char buf c; lex_index_wildly buf lexbuf }
+  | ']' { Buffer.contents buf }
   | _ as c { Buffer.add_char buf c; lex_index_wildly buf lexbuf }
   | eof { failwith "unexpected EOF" }
 and eat_templ_close_char = parse
@@ -97,7 +106,7 @@ and eat_templ_close_char = parse
   | "" { failwith (Printf.sprintf "expected token: %c" templ_close_char) }
 and lex_nested_path acc = parse
   | '.' (ident as s) { lex_nested_path (IDENT s :: acc) lexbuf }
-  | '.' '[' { lex_nested_path (lex_index lexbuf :: acc) lexbuf }
+  | '.' '[' { lex_nested_path (INDEX (lex_index lexbuf) :: acc) lexbuf }
   | "" { IDENT_PATH (List.rev acc) }
   | eof { failwith "unexpected EOF" }
 and lex_mustache_comment = parse
