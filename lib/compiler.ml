@@ -5,11 +5,11 @@ type compile_error =
       [@printer fun fmt -> fprintf fmt "Missing helper: %s"]
   | Missing_partial of string
       [@printer fun fmt -> fprintf fmt "Missing partial: %s"]
-  | Partial_lex_error of string * lex_error
+  | Partial_parse_error of string * Parser.parse_error
       [@printer
         fun fmt (name, e) ->
-          Format.fprintf fmt "Lex error in partial \"%s\": %s" name
-            (show_lex_error e)]
+          Format.fprintf fmt "Parsing error in partial \"%s\": %s" name
+            (Parser.show_parse_error e)]
   | Partial_compile_error of string * compile_error
       [@printer
         fun fmt (name, e) ->
@@ -18,7 +18,7 @@ type compile_error =
 
 type compile_result = (string, compile_error) result
 
-type hb_error = LexError of lex_error | CompileError of compile_error
+type hb_error = ParseError of Parser.parse_error | CompileError of compile_error
 [@@deriving show]
 
 type hb_result = (string, hb_error) result [@@deriving show]
@@ -287,7 +287,7 @@ let compile_tokens get_helper get_partial tokens values =
   let rec compile_token_list acc ctx tokens =
     match tokens with
     | [] -> Ok (List.rev acc |> String.concat "")
-    | `Comment _ :: rest
+    | `Comment :: rest
     | `WhitespaceControl :: `Whitespace _ :: rest
     | `Whitespace _ :: `WhitespaceControl :: rest
     | `WhitespaceControl :: rest ->
@@ -428,10 +428,10 @@ let compile_tokens get_helper get_partial tokens values =
         in
         (* Parse and compile the partial template *)
         let lexbuf =
-          uchar_array_of_string partial_template |> Sedlexing.from_uchar_array
+          Lexing.from_string partial_template
         in
-        match Lexer.lex lexbuf with
-        | Error e -> Error (Partial_lex_error (name, e))
+        match Parser.parse lexbuf with
+        | Error e -> Error (Partial_parse_error (name, e))
         | Ok partial_tokens -> (
             match
               compile_token_list [] partial_ctx_with_hash partial_tokens
@@ -444,9 +444,9 @@ let compile_tokens get_helper get_partial tokens values =
 
 let compile ?(get_helper = default_get_helper)
     ?(get_partial = default_get_partial) template values =
-  let lexbuf = uchar_array_of_string template |> Sedlexing.from_uchar_array in
-  match Lexer.lex lexbuf with
-  | Error e -> Error (LexError e)
+  let lexbuf = Lexing.from_string template in
+  match Parser.parse lexbuf with
+  | Error e -> Error (ParseError e)
   | Ok tokens -> (
       match compile_tokens get_helper get_partial tokens values with
       | Error e -> Error (CompileError e)

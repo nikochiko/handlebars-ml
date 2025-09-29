@@ -22,7 +22,7 @@ type evalable =
   | `Literal of literal
   | `App of string * evalable list
   | `WhateverMakesSense of evalable list ]
-[@@deriving show]
+[@@deriving show, eq]
 
 type block = {
   expr : evalable;
@@ -37,7 +37,7 @@ and partial_info = {
 }
 
 and token =
-  [ `Comment of string
+  [ `Comment
   | `Escaped of evalable
   | `Unescaped of evalable
   | `Block of block
@@ -45,14 +45,4 @@ and token =
   | `WhitespaceControl
   | `Whitespace of string
   | `Raw of string ]
-[@@deriving show]
-
-type lex_error = { msg : string; pos : Lexing.position; buf : Sedlexing.lexbuf }
-
-val pp_lex_error : Format.formatter -> lex_error -> unit
-val show_lex_error : lex_error -> string
-
-type lex_result = (token list, lex_error) result [@@deriving show]
-
-val uchar_array_of_string : string -> Uchar.t array
-val string_of_uchar_array : Uchar.t array -> string
+[@@deriving show, eq]

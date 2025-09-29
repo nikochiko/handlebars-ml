@@ -4,8 +4,8 @@ open Types
 type compile_error =
   | Missing_helper of string  (** Helper function not found *)
   | Missing_partial of string  (** Partial template not found *)
-  | Partial_lex_error of string * lex_error
-      (** Lexical error in a partial template *)
+  | Partial_parse_error of string * Parser.parse_error
+      (** Parsing error in a partial template *)
   | Partial_compile_error of string * compile_error
       (** Compilation error in a partial template *)
 [@@deriving show]
@@ -15,7 +15,7 @@ type compile_result = (string, compile_error) result
 
 (** Combined error type for both lexing and compilation errors *)
 type hb_error =
-  | LexError of lex_error  (** Error during lexical analysis *)
+  | ParseError of Parser.parse_error  (** Error during parsing *)
   | CompileError of compile_error  (** Error during compilation *)
 [@@deriving show]
 

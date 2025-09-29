@@ -40,7 +40,7 @@ and partial_info = {
 }
 
 and token =
-  [ `Comment of string
+  [ `Comment
   | `Escaped of evalable
   | `Unescaped of evalable
   | `Block of block
@@ -49,27 +49,3 @@ and token =
   | `Whitespace of string
   | `Raw of string ]
 [@@deriving show, eq]
-
-type lex_error = { msg : string; pos : Lexing.position; buf : Sedlexing.lexbuf }
-
-let pp_position fmt pos =
-  Format.fprintf fmt "line %d, column %d" pos.Lexing.pos_lnum
-    (pos.Lexing.pos_cnum - pos.Lexing.pos_bol)
-
-let pp_lex_error fmt { msg; pos; _ } =
-  pp_position fmt pos;
-  Format.fprintf fmt ": %s" msg
-
-let show_lex_error e =
-  pp_lex_error Format.str_formatter e;
-  Format.flush_str_formatter ()
-
-type lex_result = (token list, lex_error) result [@@deriving show]
-(* | Ok ([tokens])
-     | Error { msg; pos; buf } *)
-
-let uchar_array_of_string str =
-  Array.init (String.length str) (fun i -> Uchar.of_char (String.get str i))
-
-let string_of_uchar_array c_arr =
-  Array.to_seq c_arr |> Seq.map Uchar.to_char |> String.of_seq
