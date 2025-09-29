@@ -24,14 +24,18 @@ type evalable =
   | `Literal of literal ]
 [@@deriving show, eq]
 
+type block_kind = Section | InvertedSection [@@deriving show, eq]
+
 (* handlebarsjs supports function applications too here,
    but the semantics of it scare me very much.
    choosing not to support them for anyone's sanity. *)
 type block = {
   expr : evalable;
+  kind : block_kind;
   content : token list;
   else_content : token list;
 }
+[@@deriving show, eq]
 
 and hash_arg = string * evalable
 
@@ -51,4 +55,3 @@ and token =
   | `Whitespace of string
   | `Raw of string ]
 [@@deriving show, eq]
-

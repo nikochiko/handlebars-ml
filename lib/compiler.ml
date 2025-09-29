@@ -286,7 +286,62 @@ let apply_indent s indent =
     |> String.concat "\n"
 
 let compile_tokens get_helper get_partial tokens values =
-  let rec compile_token_list acc ctx tokens =
+  let starts_with_newline s = String.length s > 0 && s.[0] = '\n' in
+  let handle_standalone_block pre content1 content2 rest =
+    let aux lhs rhs =
+      match (List.rev lhs, rhs) with
+      | `Whitespace s1 :: lhs_rev_rest, `Whitespace s2 :: rhs_rest
+        when starts_with_newline s1 && starts_with_newline s2 ->
+          (List.rev lhs_rev_rest, `Whitespace s2 :: rhs_rest)
+      | ( `Whitespace s1 :: lhs_rev_rest,
+          `Whitespace _ :: `Whitespace s2 :: rhs_rest )
+        when starts_with_newline s1 && starts_with_newline s2 ->
+          (List.rev lhs_rev_rest, `Whitespace s2 :: rhs_rest)
+      | _ -> (lhs, rhs)
+    in
+    let pre', content1 = aux [ `Whitespace pre ] content1 in
+    let pre =
+      match pre' with
+      | [] | [ `Whitespace "\n|SENTINEL|" ] -> ""
+      | `Whitespace s :: _ -> s
+      | _ -> pre
+    in
+    match content2 with
+    | [] ->
+        let content1, rest = aux content1 rest in
+        (pre, content1, content2, rest)
+    | _ ->
+        let content1, content2 = aux content1 content2 in
+        let content2, rest = aux content2 rest in
+        (pre, content1, content2, rest)
+  in
+  let rec compile_maybe_standalone_ws ~pre t acc ctx rest =
+    match t with
+    | `Partial { name; context; hash_args } -> (
+        let indent = String.length pre - 1 in
+        let* v = compile_partial ~indent name context hash_args ctx in
+        match v with
+        | "" ->
+            let pre, rest, _, _ = handle_standalone_block pre rest [] [] in
+            compile_token_list (pre :: acc) ctx rest
+        | _ ->
+            let pre = match pre with "\n|SENTINEL|" -> "" | _ -> pre in
+            compile_token_list (v :: pre :: acc) ctx rest)
+    | `Block { expr; content; else_content; kind } when kind = Section ->
+        let pre, content, else_content, rest =
+          handle_standalone_block pre content else_content rest
+        in
+        let* compiled_block = compile_block expr content else_content ctx in
+        compile_token_list (compiled_block :: pre :: acc) ctx rest
+    | `Block { expr; content; else_content; kind } when kind = InvertedSection
+      ->
+        let pre, else_content, content, rest =
+          handle_standalone_block pre else_content content rest
+        in
+        let* compiled_block = compile_block expr content else_content ctx in
+        compile_token_list (compiled_block :: pre :: acc) ctx rest
+    | _ -> failwith "expected partial or block only"
+  and compile_token_list acc ctx tokens =
     match tokens with
     | [] -> Ok (List.rev acc |> String.concat "")
     | `Comment :: rest
@@ -294,22 +349,13 @@ let compile_tokens get_helper get_partial tokens values =
     | `Whitespace _ :: `WhitespaceControl :: rest
     | `WhitespaceControl :: rest ->
         compile_token_list acc ctx rest
-    | `Whitespace s :: `Partial { name; context; hash_args } :: rest ->
-        (* preserve indentation for partials *)
-        let indent =
-          match String.rindex_opt s '\n' with
-          | None -> 0
-          | Some idx -> String.length s - idx - 1
-        in
-        let* compiled_partial =
-          compile_partial ~indent name context hash_args ctx
-        in
-        compile_token_list (compiled_partial :: s :: acc) ctx rest
-    | `Partial { name; context; hash_args } :: rest ->
-        let* compiled_partial = compile_partial name context hash_args ctx in
-        compile_token_list (compiled_partial :: acc) ctx rest
-    | `Whitespace s :: rest -> compile_token_list (s :: acc) ctx rest
     | `Raw s :: rest -> compile_token_list (s :: acc) ctx rest
+    | `Whitespace s :: ((`Block _ | `Partial _) as t) :: rest
+      when starts_with_newline s ->
+        compile_maybe_standalone_ws ~pre:s t acc ctx rest
+    | `Whitespace s :: rest when s = "\n|SENTINEL|" ->
+        compile_token_list acc ctx rest
+    | `Whitespace s :: rest -> compile_token_list (s :: acc) ctx rest
     | `Escaped expr :: rest ->
         let* value = eval ctx get_helper expr in
         let escaped_str = string_of_literal value |> escape_html in
@@ -318,7 +364,10 @@ let compile_tokens get_helper get_partial tokens values =
         let* value = eval ctx get_helper expr in
         let unescaped_str = string_of_literal value in
         compile_token_list (unescaped_str :: acc) ctx rest
-    | `Block { expr; content; else_content } :: rest ->
+    | `Partial { name; context; hash_args } :: rest ->
+        let* compiled_partial = compile_partial name context hash_args ctx in
+        compile_token_list (compiled_partial :: acc) ctx rest
+    | `Block { expr; content; else_content; _ } :: rest ->
         let* compiled_block = compile_block expr content else_content ctx in
         compile_token_list (compiled_block :: acc) ctx rest
   and compile_block expr content else_content ctx =
@@ -439,6 +488,7 @@ let compile_tokens get_helper get_partial tokens values =
             | Ok compiled -> Ok (apply_indent compiled indent)))
   in
   let ctx = make_ctx values in
+  let tokens = `Whitespace "\n|SENTINEL|" :: tokens in
   compile_token_list [] ctx tokens
 
 let compile ?(get_helper = default_get_helper)
@@ -976,4 +1026,33 @@ let%test "preserves indentation when partials are chained" =
   in
   let values = `Assoc [ ("items", `List [ `String "A"; `String "B" ]) ] in
   let expected = "List:\n  - Item 0: A\n  - Item 1: B\n" in
+  make_test ~get_partial template values (Ok expected)
+
+let%test "removes whitespace on standalone template line" =
+  let template = {|
+    {{#each foo}}
+      - {{ this }}
+    {{/each}}
+|} in
+  let values = `Assoc [ ("foo", `List [ `String "a"; `String "b" ]) ] in
+  let expected = "\n      - a\n      - b\n" in
+  make_test template values (Ok expected)
+
+let%test "standalone partials do not leave empty line behind" =
+  let template =
+    {|
+    Items:
+    {{> item-list items}}
+    {{> item-list items}}
+    {{> item-list items}}
+    End of list.
+|}
+  in
+  let get_partial name =
+    match name with
+    | "item-list" -> Some "{{#each this}}- {{this}}\n{{/each}}"
+    | _ -> None
+  in
+  let values = `Assoc [] in
+  let expected = "\n    Items:\n    End of list.\n" in
   make_test ~get_partial template values (Ok expected)

@@ -1,14 +1,21 @@
 open Handlebars_lexer
 
-let (let*) = Result.bind
-let (>>=) = Result.bind
+let ( let* ) = Result.bind
+let ( >>= ) = Result.bind
 
 let equal_pos a b =
   a.Lexing.pos_cnum = b.Lexing.pos_cnum
   && a.Lexing.pos_bol = b.Lexing.pos_bol
   && a.Lexing.pos_lnum = b.Lexing.pos_lnum
+
 let equal_buf _ _ = true
-type parse_error = { msg : string; pos : Lexing.position [@equal equal_pos]; buf : Lexing.lexbuf [@equal equal_buf]} [@@deriving eq]
+
+type parse_error = {
+  msg : string;
+  pos : Lexing.position; [@equal equal_pos]
+  buf : Lexing.lexbuf; [@equal equal_buf]
+}
+[@@deriving eq]
 
 let string_of_path_segment segment =
   match segment with
@@ -59,8 +66,7 @@ let rec string_of_evalable (evalable : Types.evalable) =
   | `WhateverMakesSense exprs -> string_of_evalable (List.hd exprs)
   | `Literal l -> string_of_literal l
 
-let mk_err msg buf : parse_error =
-  { msg; pos = buf.Lexing.lex_curr_p; buf }
+let mk_err msg buf : parse_error = { msg; pos = buf.Lexing.lex_curr_p; buf }
 
 let pp_position fmt pos =
   Format.fprintf fmt "line %d, column %d" pos.Lexing.pos_lnum
@@ -76,23 +82,15 @@ let show_parse_error e =
 
 type parse_result = (Types.token list, parse_error) result [@@deriving show, eq]
 
-let mlex f buf =
-  try
-    Ok (f buf)
-  with Failure msg -> Error (mk_err msg buf)
+let mlex f buf = try Ok (f buf) with Failure msg -> Error (mk_err msg buf)
 
 type container =
   | Root of Types.token list
-  | Unclosed of {
-      parent: container;
-      block: Types.block;
-  }
-  | UnclosedInverted of {
-      parent: container;
-      block: Types.block;
-  }
+  | Unclosed of { parent : container; block : Types.block }
+  | UnclosedInverted of { parent : container; block : Types.block }
 
-let mk_block evalable = { Types.expr = evalable; content = []; else_content = [] }
+let mk_block ~kind evalable =
+  { Types.expr = evalable; kind; content = []; else_content = [] }
 
 let add_token container token =
   match container with
@@ -104,27 +102,33 @@ let add_token container token =
       let block = { block with else_content = token :: block.else_content } in
       UnclosedInverted { parent; block }
 
-let (++) = add_token
+let ( ++ ) = add_token
 
 let mature_unclosed container =
   match container with
   | Unclosed { parent; block } | UnclosedInverted { parent; block } ->
-    let block = { block with content = List.rev block.content; else_content = List.rev block.else_content } in
-    parent ++ `Block block
+      let block =
+        {
+          block with
+          content = List.rev block.content;
+          else_content = List.rev block.else_content;
+        }
+      in
+      parent ++ `Block block
   | _ -> failwith "Cannot mature a non-unclosed block"
 
 let invert_unclosed container =
   match container with
-  | Unclosed { parent; block } ->
-      UnclosedInverted { parent; block }
-  | UnclosedInverted _ -> failwith "This looks like an extra 'else' block in the template"
+  | Unclosed { parent; block } -> UnclosedInverted { parent; block }
+  | UnclosedInverted _ ->
+      failwith "This looks like an extra 'else' block in the template"
   | _ -> failwith "Cannot invert a non-unclosed block"
 
 let parse_literal (lit : Yojson.Basic.t) : Types.literal =
   match lit with
-  | (`String s) -> `String s
-  | (`Int i) -> `Int i
-  | (`Float f) -> `Float f
+  | `String s -> `String s
+  | `Int i -> `Int i
+  | `Float f -> `Float f
   | _ -> failwith "Cannot lift non-literal to literal"
 
 let parse_path_segment token : Types.ident_path_segment =
@@ -149,58 +153,69 @@ let mk_closing_path expr =
   | None -> failwith "mk_closing_path: no path found in expr"
 
 let rec parse_root container buf =
-let* lexres = mlex lex buf in
-match lexres with
-| EOF -> (match container with
-    | Root acc -> Ok (List.rev acc)
-    | Unclosed _ | UnclosedInverted _ -> Error (mk_err "unmatched block (did you forget an {{/}}?)" buf))
-| WHITESPACE s -> parse_root (container ++ `Whitespace s) buf
-| RAW s -> parse_root (container ++ `Raw s) buf
-| TEMPL_OPEN { ws_control; kind } -> (
-    let container = if ws_control then
-      container ++ `WhitespaceControl
-    else container in
-    match kind with
-    | Escaped -> parse_escaped container buf
-    | Unescaped -> parse_unescaped container buf
-    | Partial ->
-        let* partial_info, ws_control = parse_partial buf in
-        let container = container ++ `Partial partial_info in
-        let container = if ws_control then
-          container ++ `WhitespaceControl
-        else container in
-        parse_root container buf
-    | Section -> parse_section container buf
-    | InvertedSection -> parse_inverted_section container buf
-    | CloseSection -> parse_close_section container buf)
-| COMMENT -> parse_root (container ++ `Comment) buf
-| _ -> Error (mk_err "unexpected token in root" buf)
+  let* lexres = mlex lex buf in
+  match lexres with
+  | EOF -> (
+      match container with
+      | Root acc -> Ok (List.rev acc)
+      | Unclosed _ | UnclosedInverted _ ->
+          Error (mk_err "unmatched block (did you forget an {{/}}?)" buf))
+  | WHITESPACE s -> parse_root (container ++ `Whitespace s) buf
+  | RAW s -> parse_root (container ++ `Raw s) buf
+  | TEMPL_OPEN { ws_control; kind } -> (
+      let container =
+        if ws_control then container ++ `WhitespaceControl else container
+      in
+      match kind with
+      | Escaped -> parse_escaped container buf
+      | Unescaped -> parse_unescaped container buf
+      | Partial ->
+          let* partial_info, ws_control = parse_partial buf in
+          let container = container ++ `Partial partial_info in
+          let container =
+            if ws_control then container ++ `WhitespaceControl else container
+          in
+          parse_root container buf
+      | Section -> parse_section container buf
+      | InvertedSection -> parse_inverted_section container buf
+      | CloseSection -> parse_close_section container buf)
+  | COMMENT -> parse_root (container ++ `Comment) buf
+  | _ -> Error (mk_err "unexpected token in root" buf)
 
 and parse_escaped container buf =
   let* inner, ws_control = parse_templ buf in
-  let* container = match inner with
-    | `App ("else", []) -> (try Ok (invert_unclosed container) with Failure e -> Error (mk_err e buf))
+  let* container =
+    match inner with
+    | `App ("else", []) -> (
+        try Ok (invert_unclosed container)
+        with Failure e -> Error (mk_err e buf))
     | _ -> Ok (container ++ `Escaped inner)
   in
-  let container = if ws_control then
-    container ++ `WhitespaceControl
-  else container in
+  let container =
+    if ws_control then container ++ `WhitespaceControl else container
+  in
   parse_root container buf
 
 and parse_unescaped container buf =
   let* inner, ws_control = parse_templ ~is_unescaped:true buf in
   let container = container ++ `Unescaped inner in
-  let container = if ws_control then
-    container ++ `WhitespaceControl
-  else container in
+  let container =
+    if ws_control then container ++ `WhitespaceControl else container
+  in
   parse_root container buf
 
 and parse_templ ?(is_unescaped = false) buf =
   let expect_templ_close result = function
     | TEMPL_CLOSE { ws_control; is_unescaped = t_is_unescaped; raw } ->
         if is_unescaped <> t_is_unescaped then
-          let expected = if is_unescaped then templ_open ^ String.make 1 templ_open_char else templ_open in
-          let msg = Printf.sprintf "expected closing tag \"%s\" but found \"%s\"" expected raw in
+          let expected =
+            if is_unescaped then templ_open ^ String.make 1 templ_open_char
+            else templ_open
+          in
+          let msg =
+            Printf.sprintf "expected closing tag \"%s\" but found \"%s\""
+              expected raw
+          in
           Error (mk_err msg buf)
         else Ok (result, ws_control)
     | _ -> Error (mk_err "expected closing tag" buf)
@@ -209,23 +224,29 @@ and parse_templ ?(is_unescaped = false) buf =
   | IDENT_PATH [ IDENT name ] when name = "else" ->
       let expr = `App ("else", []) in
       mlex lex_in_templ buf >>= expect_templ_close expr
-  | IDENT_PATH [ IDENT name ] | IDENT_PATH [ INDEX (`String name) ] | LITERAL (`String name) -> (
-      let until = function | TEMPL_CLOSE _ -> true | _ -> false in
+  | IDENT_PATH [ IDENT name ]
+  | IDENT_PATH [ INDEX (`String name) ]
+  | LITERAL (`String name) ->
+      let until = function TEMPL_CLOSE _ -> true | _ -> false in
       (* TODO: add support for hash args for helpers *)
-      let* (pos_args, _hash_args, close_token) = parse_arguments ~until buf in
-      let expr = match pos_args with
-      | [] ->`WhateverMakesSense [ `App (name, []); `IdentPath [ `Ident name ] ]
-      | _ -> `App (name, pos_args)
+      let* pos_args, _hash_args, close_token = parse_arguments ~until buf in
+      let expr =
+        match pos_args with
+        | [] ->
+            `WhateverMakesSense [ `App (name, []); `IdentPath [ `Ident name ] ]
+        | _ -> `App (name, pos_args)
       in
-      close_token |> expect_templ_close expr)
+      close_token |> expect_templ_close expr
   | LPAREN ->
-      let* (name, pos_args, _hash_args, _last) = parse_application ~until:(equal_token RPAREN) buf in
+      let* name, pos_args, _hash_args, _last =
+        parse_application ~until:(equal_token RPAREN) buf
+      in
       mlex lex_in_templ buf >>= expect_templ_close (`App (name, pos_args))
   | IDENT_PATH path ->
       let expr = `IdentPath (List.map parse_path_segment path) in
       mlex lex_in_templ buf >>= expect_templ_close expr
   | LITERAL (`Int i) ->
-      let expr = `IdentPath [`Index (`Int i)] in
+      let expr = `IdentPath [ `Index (`Int i) ] in
       mlex lex_in_templ buf >>= expect_templ_close expr
   | token ->
       let msg = Printf.sprintf "unexpected token: %s" (show_token token) in
@@ -233,8 +254,10 @@ and parse_templ ?(is_unescaped = false) buf =
 
 and parse_application ~until buf =
   mlex lex_in_templ buf >>= function
-  | IDENT_PATH [ IDENT name ] | IDENT_PATH [ INDEX (`String name) ] | LITERAL (`String name) ->
-      let* (pos_args, hash_args, last_token) = parse_arguments ~until buf in
+  | IDENT_PATH [ IDENT name ]
+  | IDENT_PATH [ INDEX (`String name) ]
+  | LITERAL (`String name) ->
+      let* pos_args, hash_args, last_token = parse_arguments ~until buf in
       Ok (name, pos_args, hash_args, last_token)
   | _ -> Error (mk_err "expected function name in application" buf)
 
@@ -243,10 +266,14 @@ and parse_arguments ~until buf =
     | IDENT_PATH path -> Ok (`IdentPath (List.map parse_path_segment path))
     | LITERAL lit -> Ok (`Literal (parse_literal lit))
     | LPAREN ->
-        let* (name, pos_args, _hash_args, _t) = parse_application ~until:(equal_token RPAREN) buf in
+        let* name, pos_args, _hash_args, _t =
+          parse_application ~until:(equal_token RPAREN) buf
+        in
         Ok (`App (name, pos_args))
     | token ->
-        let msg = Printf.sprintf "unexpected token: \"%s\"" (show_token token) in
+        let msg =
+          Printf.sprintf "unexpected token: \"%s\"" (show_token token)
+        in
         Error (mk_err msg buf)
   in
   let rec aux pos_args hash_args buf =
@@ -263,20 +290,16 @@ and parse_arguments ~until buf =
 
 and parse_section container buf =
   let* evalable, ws_control = parse_templ buf in
-  let block = mk_block evalable in
+  let block = mk_block ~kind:Section evalable in
   let child = Unclosed { parent = container; block } in
-  let child = if ws_control then
-    child ++ `WhitespaceControl
-  else child in
+  let child = if ws_control then child ++ `WhitespaceControl else child in
   parse_root child buf
 
 and parse_inverted_section container buf =
   let* evalable, ws_control = parse_templ buf in
-  let block = mk_block evalable in
+  let block = mk_block ~kind:InvertedSection evalable in
   let child = UnclosedInverted { parent = container; block } in
-  let child = if ws_control then
-    child ++ `WhitespaceControl
-  else child in
+  let child = if ws_control then child ++ `WhitespaceControl else child in
   parse_root child buf
 
 and parse_close_section container buf =
@@ -295,34 +318,36 @@ and parse_close_section container buf =
       match make_sense inner with
       | Some path when Types.equal_evalable path expected_closing ->
           let container = mature_unclosed container in
-          let container = if ws_control then
-            container ++ `WhitespaceControl
-          else container in
+          let container =
+            if ws_control then container ++ `WhitespaceControl else container
+          in
           parse_root container buf
       | _ ->
-          let msg = Printf.sprintf "unexpected close block: \"%s\"; does not match \"%s\""
-            (string_of_evalable inner)
-            (string_of_evalable expected_closing)
+          let msg =
+            Printf.sprintf
+              "unexpected close block: \"%s\"; does not match \"%s\""
+              (string_of_evalable inner)
+              (string_of_evalable expected_closing)
           in
           Error (mk_err msg buf))
 
 and parse_partial buf =
-  let until = function | TEMPL_CLOSE _ -> true | _ -> false in
-  let* (name, pos_args, hash_args, last_token) = parse_application ~until buf in
-  let* ws_control = match last_token with
+  let until = function TEMPL_CLOSE _ -> true | _ -> false in
+  let* name, pos_args, hash_args, last_token = parse_application ~until buf in
+  let* ws_control =
+    match last_token with
     | TEMPL_CLOSE { ws_control; _ } -> Ok ws_control
     | _ -> Error (mk_err "expected closing tag" buf)
   in
-  let partial_info = match pos_args with
-  | [] -> { Types.name; context = None; hash_args }
-  | [ context ] -> { Types.name; context = Some context; hash_args }
-  | _ -> failwith "A partial takes exactly 1 positional argument for context" 
+  let partial_info =
+    match pos_args with
+    | [] -> { Types.name; context = None; hash_args }
+    | [ context ] -> { Types.name; context = Some context; hash_args }
+    | _ -> failwith "A partial takes exactly 1 positional argument for context"
   in
   Ok (partial_info, ws_control)
 
-
-let parse lexbuf : parse_result =
-  parse_root (Root []) lexbuf
+let parse lexbuf : parse_result = parse_root (Root []) lexbuf
 
 (* *)
 
@@ -339,28 +364,39 @@ let make_test input expected =
       false
 
 let mk_test_err msg lnum cnum =
-  Error ({ msg; pos = { Lexing.pos_fname = ""; pos_lnum = lnum; pos_bol = 0; pos_cnum = cnum }; buf = Lexing.from_string "" })
+  Error
+    {
+      msg;
+      pos =
+        { Lexing.pos_fname = ""; pos_lnum = lnum; pos_bol = 0; pos_cnum = cnum };
+      buf = Lexing.from_string "";
+    }
 
 (* *)
 
 let%test "parses simple template substitution correctly" =
   let input = "Hello {{name}}!" in
-  let expected = Ok([`Raw "Hello";
-    `Whitespace " ";
-    `Escaped (`WhateverMakesSense [ `App ("name", []); `IdentPath [ `Ident "name" ]  ]);
-    `Raw "!";
-  ]) in
+  let expected =
+    Ok
+      [
+        `Raw "Hello";
+        `Whitespace " ";
+        `Escaped
+          (`WhateverMakesSense
+             [ `App ("name", []); `IdentPath [ `Ident "name" ] ]);
+        `Raw "!";
+      ]
+  in
   make_test input expected
 
 let%test "parses simple comments correctly" =
   let input = "Hello, {{! this is a comment }} world" in
-  let expected = Ok([
-    `Raw "Hello,";
-    `Whitespace " ";
-    `Comment;
-    `Whitespace " ";
-    `Raw "world";
-  ]) in
+  let expected =
+    Ok
+      [
+        `Raw "Hello,"; `Whitespace " "; `Comment; `Whitespace " "; `Raw "world";
+      ]
+  in
   make_test input expected
 
 let%test "errors when parsing an unclosed template" =
@@ -375,83 +411,122 @@ let%test "errors when unexpected token in template" =
 
 let%test "parses nested paths correctly" =
   let input = "{{a.b.c.[0].[\"hello\"].d}}" in
-  let expected = Ok([
-    `Escaped (`IdentPath [
-      `Ident "a";
-      `Ident "b";
-      `Ident "c";
-      `Index (`Int 0);
-      `Index (`String "\"hello\"");
-      `Ident "d";
-    ]);
-  ]) in
+  let expected =
+    Ok
+      [
+        `Escaped
+          (`IdentPath
+             [
+               `Ident "a";
+               `Ident "b";
+               `Ident "c";
+               `Index (`Int 0);
+               `Index (`String "\"hello\"");
+               `Ident "d";
+             ]);
+      ]
+  in
   make_test input expected
 
 let%test "parses function application correctly" =
   let input = "{{func arg1 arg2.[0] nested.func2.[\"hello\"]}}" in
-  let expected = Ok([
-    `Escaped (`App ("func", [
-      `IdentPath [ `Ident "arg1" ];
-      `IdentPath [ `Ident "arg2"; `Index (`Int 0) ];
-      `IdentPath [ `Ident "nested"; `Ident "func2"; `Index (`String "\"hello\"") ];
-    ]));
-  ]) in
+  let expected =
+    Ok
+      [
+        `Escaped
+          (`App
+             ( "func",
+               [
+                 `IdentPath [ `Ident "arg1" ];
+                 `IdentPath [ `Ident "arg2"; `Index (`Int 0) ];
+                 `IdentPath
+                   [
+                     `Ident "nested";
+                     `Ident "func2";
+                     `Index (`String "\"hello\"");
+                   ];
+               ] ));
+      ]
+  in
   make_test input expected
 
 let%test "parses whitespace control correctly" =
   let input = "Hello, {{~name~}}!" in
-  let expected = Ok([
-    `Raw "Hello,";
-    `Whitespace " ";
-    `WhitespaceControl;
-    `Escaped (`WhateverMakesSense [ `App ("name", []); `IdentPath [ `Ident "name" ];
-       ]);
-    `WhitespaceControl;
-    `Raw "!";
-  ]) in
+  let expected =
+    Ok
+      [
+        `Raw "Hello,";
+        `Whitespace " ";
+        `WhitespaceControl;
+        `Escaped
+          (`WhateverMakesSense
+             [ `App ("name", []); `IdentPath [ `Ident "name" ] ]);
+        `WhitespaceControl;
+        `Raw "!";
+      ]
+  in
   make_test input expected
 
 let%test "parses unescaped templates correctly" =
   let input = "Hello, {{{name}}}!" in
-  let expected = Ok([
-    `Raw "Hello,";
-    `Whitespace " ";
-    `Unescaped (`WhateverMakesSense [ `App ("name", []); `IdentPath [ `Ident "name" ];
-       ]);
-    `Raw "!";
-  ]) in
+  let expected =
+    Ok
+      [
+        `Raw "Hello,";
+        `Whitespace " ";
+        `Unescaped
+          (`WhateverMakesSense
+             [ `App ("name", []); `IdentPath [ `Ident "name" ] ]);
+        `Raw "!";
+      ]
+  in
   make_test input expected
 
 let%test "parsed unescaped templates with whitespace control correctly" =
   let input = "Hello, {{~{name}}}!" in
-  let expected = Ok([
-    `Raw "Hello,";
-    `Whitespace " ";
-    `WhitespaceControl;
-    `Unescaped (`WhateverMakesSense [ `App ("name", []); `IdentPath [ `Ident "name" ];
-       ]);
-    `Raw "!";
-  ]) in
+  let expected =
+    Ok
+      [
+        `Raw "Hello,";
+        `Whitespace " ";
+        `WhitespaceControl;
+        `Unescaped
+          (`WhateverMakesSense
+             [ `App ("name", []); `IdentPath [ `Ident "name" ] ]);
+        `Raw "!";
+      ]
+  in
   make_test input expected
 
 let%test "parses partials correctly" =
   let input = "Hello, {{> partialName context}}" in
-  let expected = Ok([
-    `Raw "Hello,";
-    `Whitespace " ";
-    `Partial { Types.name = "partialName"; context = Some (`IdentPath [ `Ident "context" ]); hash_args = [] };
-  ]) in
+  let expected =
+    Ok
+      [
+        `Raw "Hello,";
+        `Whitespace " ";
+        `Partial
+          {
+            Types.name = "partialName";
+            context = Some (`IdentPath [ `Ident "context" ]);
+            hash_args = [];
+          };
+      ]
+  in
   make_test input expected
 
 let%test "parses partials with whitespace control correctly" =
   let input = "Hello, {{~> partialName ~}}" in
-  let expected = Ok([
-    `Raw "Hello,";
-    `Whitespace " ";
-    `WhitespaceControl;
-    `Partial { Types.name = "partialName"; context = None; hash_args = [] };
-    `WhitespaceControl;
-  ]) in
+  let expected =
+    Ok
+      [
+        `Raw "Hello,";
+        `Whitespace " ";
+        `WhitespaceControl;
+        `Partial { Types.name = "partialName"; context = None; hash_args = [] };
+        `WhitespaceControl;
+      ]
+  in
   make_test input expected
 
 let%test "parses template with escaped chars" =
@@ -546,11 +621,7 @@ let%test "parses comments" =
   make_test "hello, {{! this is a comment }} world"
     (Ok
        [
-         `Raw "hello,";
-         `Whitespace " ";
-         `Comment;
-         `Whitespace " ";
-         `Raw "world";
+         `Raw "hello,"; `Whitespace " "; `Comment; `Whitespace " "; `Raw "world";
        ])
 
 let%test "parses comments containing mustache syntax" =
@@ -647,6 +718,7 @@ let%test "parses else block" =
          `Block
            {
              expr = `App ("if", [ `IdentPath [ `Ident "a" ] ]);
+             kind = Section;
              content = [ `Raw "yes" ];
              else_content = [ `Raw "no" ];
            };
@@ -665,9 +737,7 @@ let%test "parses else looking things as something else" =
        ])
 
 let%test "parses else block without open block as Error" =
-  let buf =
-    Lexing.from_string "{{#if a}}ok{{/if}} {{else}} no business here"
-  in
+  let buf = Lexing.from_string "{{#if a}}ok{{/if}} {{else}} no business here" in
   let result = parse buf in
   match result with Ok _ -> false | Error _ -> true
 
@@ -684,6 +754,7 @@ let%test "parses mustache-style open & close blocks" =
            {
              expr =
                `WhateverMakesSense [ `App ("a", []); `IdentPath [ `Ident "a" ] ];
+             kind = Section;
              content = [ `Escaped (`IdentPath [ `DotPath `OneDot ]) ];
              else_content = [];
            };
@@ -696,6 +767,7 @@ let%test "parses mustache style open/close with dot-index path" =
          `Block
            {
              expr = `IdentPath [ `Ident "resume"; `Ident "basics" ];
+             kind = Section;
              content =
                [
                  `Escaped
@@ -714,6 +786,7 @@ let%test "parses inverted blocks" =
            {
              expr =
                `WhateverMakesSense [ `App ("a", []); `IdentPath [ `Ident "a" ] ];
+             kind = InvertedSection;
              content = [];
              else_content = [ `Escaped (`IdentPath [ `DotPath `OneDot ]) ];
            };
@@ -732,6 +805,7 @@ let%test "parses example 1 from handlebarsjs docs" =
          `Block
            {
              expr = `App ("with", [ `IdentPath [ `Ident "person" ] ]);
+             kind = Section;
              content =
                [
                  `Whitespace "\n";
@@ -761,6 +835,7 @@ let%test "parses literal string as key for substitution" =
          `Whitespace " ";
          `Block
            {
+             kind = Section;
              expr = `App ("with", [ `IdentPath [ `Ident "obj" ] ]);
              content =
                [
@@ -780,11 +855,9 @@ let%test "parses literal int as index for substitution" =
          `Whitespace " ";
          `Block
            {
+             kind = Section;
              expr = `App ("with", [ `IdentPath [ `Ident "arr" ] ]);
-             content =
-               [
-                 `Escaped ( `IdentPath [ `Index (`Int 0) ] );
-               ];
+             content = [ `Escaped (`IdentPath [ `Index (`Int 0) ]) ];
              else_content = [];
            };
          `Whitespace " ";
@@ -797,6 +870,7 @@ let%test "parses multiple index arguments" =
          `Whitespace " ";
          `Block
            {
+             kind = Section;
              expr = `App ("with", [ `IdentPath [ `Ident "arr" ] ]);
              content =
                [
@@ -907,6 +981,7 @@ let%test "parses if section" =
        [
          `Block
            {
+             kind = Section;
              expr = `App ("if", [ `IdentPath [ `Ident "condition" ] ]);
              content = [ `Raw "Yes" ];
              else_content = [ `Raw "No" ];

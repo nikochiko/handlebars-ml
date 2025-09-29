@@ -24,11 +24,15 @@ type evalable =
   | `WhateverMakesSense of evalable list ]
 [@@deriving show, eq]
 
+type block_kind = Section | InvertedSection [@@deriving show, eq]
+
 type block = {
   expr : evalable;
+  kind : block_kind;
   content : token list;
   else_content : token list;
 }
+[@@deriving show, eq]
 
 and partial_info = {
   name : string;
@@ -46,4 +50,3 @@ and token =
   | `Whitespace of string
   | `Raw of string ]
 [@@deriving show, eq]
-
