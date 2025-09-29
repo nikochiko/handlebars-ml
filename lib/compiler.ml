@@ -18,7 +18,9 @@ type compile_error =
 
 type compile_result = (string, compile_error) result
 
-type hb_error = ParseError of Parser.parse_error | CompileError of compile_error
+type hb_error =
+  | ParseError of Parser.parse_error
+  | CompileError of compile_error
 [@@deriving show]
 
 type hb_result = (string, hb_error) result [@@deriving show]
@@ -307,8 +309,7 @@ let compile_tokens get_helper get_partial tokens values =
         let* compiled_partial = compile_partial name context hash_args ctx in
         compile_token_list (compiled_partial :: acc) ctx rest
     | `Whitespace s :: rest -> compile_token_list (s :: acc) ctx rest
-    | `Raw s :: rest ->
-        compile_token_list (s :: acc) ctx rest
+    | `Raw s :: rest -> compile_token_list (s :: acc) ctx rest
     | `Escaped expr :: rest ->
         let* value = eval ctx get_helper expr in
         let escaped_str = string_of_literal value |> escape_html in
@@ -427,9 +428,7 @@ let compile_tokens get_helper get_partial tokens values =
             Ok new_ctx
         in
         (* Parse and compile the partial template *)
-        let lexbuf =
-          Lexing.from_string partial_template
-        in
+        let lexbuf = Lexing.from_string partial_template in
         match Parser.parse lexbuf with
         | Error e -> Error (Partial_parse_error (name, e))
         | Ok partial_tokens -> (
