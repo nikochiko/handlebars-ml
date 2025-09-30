@@ -21,7 +21,7 @@
  (name handlebars-ml)
  (synopsis "Handlebars templating for OCaml")
  (description "OCaml port of the Handlebars.js templating engine")
- (depends ocaml
+ (depends (ocaml (>= 4.14))
           yojson
           ISO8601
           ppx_deriving)

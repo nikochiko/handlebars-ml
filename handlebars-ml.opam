@@ -12,7 +12,7 @@ doc: "https://github.com/nikochiko/handlebars-ml"
 bug-reports: "https://github.com/nikochiko/handlebars-ml/issues"
 depends: [
   "dune" {>= "3.18"}
-  "ocaml"
+  "ocaml" {>= "4.14"}
   "yojson"
   "ISO8601"
   "ppx_deriving"
