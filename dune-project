@@ -23,7 +23,6 @@
  (description "OCaml port of the Handlebars.js templating engine")
  (depends (ocaml (>= 4.14))
           (yojson (>= 2.0))
-          ISO8601
           ppx_deriving
           (ppx_inline_test :with-test))
  (tags

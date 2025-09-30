@@ -174,9 +174,7 @@ let%test "partial with context inheritance should work" =
 let%test "partial with custom context should work - Phase 2" =
   let template = "{{> greeting}}" in
   let get_partial name =
-    match name with
-    | "greeting" -> Some "Hello {{user.name}}!"
-    | _ -> None
+    match name with "greeting" -> Some "Hello {{user.name}}!" | _ -> None
   in
   let values = `Assoc [ ("user", `Assoc [ ("name", `String "Bob") ]) ] in
   make_test ~get_partial template values (Ok "Hello Bob!")
@@ -194,9 +192,7 @@ let%test "nested partials should work" =
 
 let%test "partial recursion should be prevented" =
   let get_partial name =
-    match name with
-    | "recursive" -> Some "{{> recursive}}"
-    | _ -> None
+    match name with "recursive" -> Some "{{> recursive}}" | _ -> None
   in
   let values = `Assoc [] in
   let template_missing = "{{> missing}}" in
@@ -232,11 +228,7 @@ let%test "partial with nested context expression should work" =
 
 let%test "partial with literal context should work" =
   let template = "{{> echo \"Hello World\"}}" in
-  let get_partial name =
-    match name with
-    | "echo" -> Some "{{.}}"
-    | _ -> None
-  in
+  let get_partial name = match name with "echo" -> Some "{{.}}" | _ -> None in
   let values = `Assoc [] in
   make_test ~get_partial template values (Ok "Hello World")
 
@@ -448,27 +440,6 @@ let%test "helper function: remove_protocol: OK case" =
   let values = `Assoc [ ("url", `String "https://example.com") ] in
   make_test template values (Ok "example.com")
 
-let%test "helper function: format_date: OK case" =
-  let template = "{{format_date \"%Y-%M-%D\" date}}" in
-  let values = `Assoc [ ("date", `String "2024-06-15T12:34:56Z") ] in
-  make_test template values (Ok "2024-06-15")
-
-let%test "helper function: format_date without format: OK case" =
-  let template = "{{format_date date}}" in
-  let values = `Assoc [ ("date", `String "2024-06-15T12:34:56Z") ] in
-  make_test template values (Ok "2024-06-15")
-
-let%test "helper function: format_date with invalid date: should return empty" =
-  let template = "{{format_date \"%Y-%M-%D\" date}}" in
-  let values = `Assoc [ ("date", `String "invalid-date") ] in
-  make_test template values (Ok "")
-
-let%test "helper function: format_date with invalid format: should return empty"
-    =
-  let template = "{{format_date \"%Q\" date}}" in
-  let values = `Assoc [ ("date", `String "2024-06-15T12:34:56Z") ] in
-  make_test template values (Ok "")
-
 let%test "preserves indentation in partial" =
   let template = "Items:\n  {{> item-list items}}" in
   let get_partial name =
@@ -529,9 +500,10 @@ let%test "standalone block helpers do not leave empty line behind" =
     {{/if}}
     After condition.
 |}
-    in
-    let values = `Assoc [ ("condition", `Bool true) ] in
-    make_test template values (Ok "\n      Condition is true.\n    After condition.\n")
+  in
+  let values = `Assoc [ ("condition", `Bool true) ] in
+  make_test template values
+    (Ok "\n      Condition is true.\n    After condition.\n")
 
 let%test "nested helper blocks don't consume lines" =
   let template =
@@ -544,11 +516,14 @@ let%test "nested helper blocks don't consume lines" =
 |}
   in
   let get_partial name =
-    match name with
-    | "item-view" -> Some "- {{this}}\n"
-    | _ -> None
+    match name with "item-view" -> Some "- {{this}}\n" | _ -> None
   in
-  let values = `Assoc [ ("condition", `Bool true); ("items", `List [ `String "a"; `String "b" ]) ] in
+  let values =
+    `Assoc
+      [
+        ("condition", `Bool true); ("items", `List [ `String "a"; `String "b" ]);
+      ]
+  in
   let expected = "\n      - a\n      - b\n" in
   make_test ~get_partial template values (Ok expected)
 
@@ -580,8 +555,7 @@ let%test "standalone partial with section leaves no whitespace" =
     {{> header}}
   </main>
 </body>
-|}
-  in
+|} in
   let get_partial name =
     match name with
     | "header" -> Some {|{{#basics}}
@@ -597,5 +571,6 @@ let%test "standalone partial with section leaves no whitespace" =
     <h1>Title</h1>
   </main>
 </body>
-|}
-  in make_test ~get_partial template values (Ok expected)
+|} in
+  make_test ~get_partial template values (Ok expected)
+

@@ -217,29 +217,6 @@ let default_get_helper name =
     | [ any ] -> Some (`Bool (not (is_truthy any)))
     | _ -> None
   in
-  let remove_protocol = function
-    | [ `String url ] ->
-        let re = Str.regexp "^https?://" in
-        let stripped = Str.replace_first re "" url in
-        Some (`String stripped)
-    | _ -> None
-  in
-  let format_date args =
-    let aux fmt s =
-      let open ISO8601.Permissive in
-      try
-        let dt, maybe_tz = datetime_tz ~reqtime:false s in
-        let tz = match maybe_tz with None -> 0. | Some tz -> tz in
-        pp_format Format.str_formatter fmt dt tz;
-        Some (`String (Format.flush_str_formatter ()))
-      with Failure _ ->
-        None (* TODO: better error handling? let the user know *)
-    in
-    match args with
-    | [ `String s ] -> aux "%Y-%M-%D" s
-    | [ `String fmt; `String s ] -> aux fmt s
-    | _ -> None
-  in
   let add = function
     | [ `Int a; `Int b ] -> Some (`Int (a + b))
     | [ `Float a; `Float b ] -> Some (`Float (a +. b))
@@ -264,8 +241,6 @@ let default_get_helper name =
   | "concat" -> Some concat
   | "eq" -> Some eq
   | "not" -> Some not_
-  | "remove_protocol" -> Some remove_protocol
-  | "format_date" -> Some format_date
   | "add" -> Some add
   | "increment" -> Some increment
   | "decrement" -> Some decrement
@@ -289,7 +264,9 @@ let newline_sentinel_char = '\x1B'
 let newline_sentinel = "\x1B"
 
 let compile_tokens get_helper get_partial tokens values =
-  let starts_with_newline s = String.length s > 0 && (s.[0] = '\n' || s.[0] = newline_sentinel_char) in
+  let starts_with_newline s =
+    String.length s > 0 && (s.[0] = '\n' || s.[0] = newline_sentinel_char)
+  in
   let swap_newline_sentinel s =
     if s.[0] = '\n' then newline_sentinel ^ String.sub s 1 (String.length s - 1)
     else s
@@ -297,18 +274,26 @@ let compile_tokens get_helper get_partial tokens values =
   let drop_left n s =
     if String.length s <= n then "" else String.sub s n (String.length s - n)
   in
-  let handle_standalone_block ?(bv="") pre content1 content2 rest =
+  let handle_standalone_block ?(bv = "") pre content1 content2 rest =
     let auxr lhs rhs =
       match (List.rev lhs, rhs) with
-      | (`Whitespace s1) :: lhs_rev_rest, `Whitespace s2 :: rhs_rest
+      | `Whitespace s1 :: lhs_rev_rest, `Whitespace s2 :: rhs_rest
         when starts_with_newline s1 && starts_with_newline s2 ->
-          let left_ws = if bv <> "" then `Whitespace s1 else `Whitespace (String.make 1 s1.[0]) in
-          (List.rev (left_ws :: lhs_rev_rest), `Whitespace (swap_newline_sentinel s2) :: rhs_rest)
-      |   `Whitespace s1 :: lhs_rev_rest,
-          `Whitespace _ :: `Whitespace s2 :: rhs_rest
+          let left_ws =
+            if bv <> "" then `Whitespace s1
+            else `Whitespace (String.make 1 s1.[0])
+          in
+          ( List.rev (left_ws :: lhs_rev_rest),
+            `Whitespace (swap_newline_sentinel s2) :: rhs_rest )
+      | ( `Whitespace s1 :: lhs_rev_rest,
+          `Whitespace _ :: `Whitespace s2 :: rhs_rest )
         when starts_with_newline s1 && starts_with_newline s2 ->
-          let left_ws = if bv <> "" then `Whitespace s1 else `Whitespace (String.make 1 s1.[0]) in
-          (List.rev (left_ws :: lhs_rev_rest), `Whitespace (swap_newline_sentinel s2) :: rhs_rest)
+          let left_ws =
+            if bv <> "" then `Whitespace s1
+            else `Whitespace (String.make 1 s1.[0])
+          in
+          ( List.rev (left_ws :: lhs_rev_rest),
+            `Whitespace (swap_newline_sentinel s2) :: rhs_rest )
       | _ -> (lhs, rhs)
     in
     let pre = if pre = "" then newline_sentinel else pre in
@@ -316,7 +301,9 @@ let compile_tokens get_helper get_partial tokens values =
     let pre =
       match pre' with
       | [] -> ""
-      | `Whitespace s :: _ when String.length s > 0 && s.[0] = newline_sentinel_char -> drop_left 1 s
+      | `Whitespace s :: _
+        when String.length s > 0 && s.[0] = newline_sentinel_char ->
+          drop_left 1 s
       | `Whitespace s :: _ -> s
       | _ -> pre
     in
@@ -330,35 +317,38 @@ let compile_tokens get_helper get_partial tokens values =
         (pre, content1, content2, rest)
   in
   let rec compile_maybe_standalone_ws pre curr acc ctx rest =
-    let* (acc, ctx, rest) = match curr with
-    | `Partial { name; context; hash_args } -> (
-        let indentation =
-          match pre with
-          | s when starts_with_newline s -> String.sub s 1 (String.length s - 1)
-          | _ -> pre
-        in
-        let* v = compile_partial ~indentation name context hash_args ctx in
-        let pre, rest, _, _ = handle_standalone_block ~bv:v pre rest [] [] in
-        let acc = v :: pre :: acc in
-        Ok (acc, ctx, rest))
-    | `Block { expr; content; else_content; kind } when kind = Section -> (
-        let pre, content, else_content, rest =
-          handle_standalone_block pre content else_content rest
-        in
-        let* compiled_block = compile_block expr content else_content ctx in
-        let acc = compiled_block :: pre :: acc in
-        Ok (acc, ctx, rest))
-    | `Block { expr; content; else_content; kind } when kind = InvertedSection
-      -> (
-        let pre, else_content, content, rest =
-          handle_standalone_block pre else_content content rest
-        in
-        let* compiled_block = compile_block expr content else_content ctx in
-        let acc = compiled_block :: pre :: acc in
-        Ok (acc, ctx, rest))
-    | _ -> failwith "expected partial or block only"
-    in match rest with
-    | (`Partial _ | `Block _ as curr) :: rest' ->
+    let* acc, ctx, rest =
+      match curr with
+      | `Partial { name; context; hash_args } ->
+          let indentation =
+            match pre with
+            | s when starts_with_newline s ->
+                String.sub s 1 (String.length s - 1)
+            | _ -> pre
+          in
+          let* v = compile_partial ~indentation name context hash_args ctx in
+          let pre, rest, _, _ = handle_standalone_block ~bv:v pre rest [] [] in
+          let acc = v :: pre :: acc in
+          Ok (acc, ctx, rest)
+      | `Block { expr; content; else_content; kind } when kind = Section ->
+          let pre, content, else_content, rest =
+            handle_standalone_block pre content else_content rest
+          in
+          let* compiled_block = compile_block expr content else_content ctx in
+          let acc = compiled_block :: pre :: acc in
+          Ok (acc, ctx, rest)
+      | `Block { expr; content; else_content; kind } when kind = InvertedSection
+        ->
+          let pre, else_content, content, rest =
+            handle_standalone_block pre else_content content rest
+          in
+          let* compiled_block = compile_block expr content else_content ctx in
+          let acc = compiled_block :: pre :: acc in
+          Ok (acc, ctx, rest)
+      | _ -> failwith "expected partial or block only"
+    in
+    match rest with
+    | ((`Partial _ | `Block _) as curr) :: rest' ->
         compile_maybe_standalone_ws "" curr acc ctx rest'
     | _ -> compile_token_list acc ctx rest
   and compile_token_list acc ctx tokens =
@@ -373,8 +363,11 @@ let compile_tokens get_helper get_partial tokens values =
     | `Whitespace pre :: ((`Block _ | `Partial _) as curr) :: rest
       when starts_with_newline pre ->
         compile_maybe_standalone_ws pre curr acc ctx rest
-    | `Whitespace s :: rest when String.length s > 0 && s.[0] = newline_sentinel_char ->
-        compile_token_list (String.sub s 1 (String.length s - 1) :: acc) ctx rest
+    | `Whitespace s :: rest
+      when String.length s > 0 && s.[0] = newline_sentinel_char ->
+        compile_token_list
+          (String.sub s 1 (String.length s - 1) :: acc)
+          ctx rest
     | `Whitespace s :: rest -> compile_token_list (s :: acc) ctx rest
     | `Escaped expr :: rest ->
         let* value = eval ctx get_helper expr in
@@ -501,7 +494,9 @@ let compile_tokens get_helper get_partial tokens values =
         match Parser.parse lexbuf with
         | Error e -> Error (Partial_parse_error (name, e))
         | Ok partial_tokens -> (
-            let partial_tokens = `Whitespace newline_sentinel :: partial_tokens in
+            let partial_tokens =
+              `Whitespace newline_sentinel :: partial_tokens
+            in
             match
               compile_token_list [] partial_ctx_with_hash partial_tokens
             with
@@ -521,4 +516,3 @@ let compile ?(get_helper = default_get_helper)
       match compile_tokens get_helper get_partial tokens values with
       | Error e -> Error (CompileError e)
       | Ok result -> Ok result)
-
