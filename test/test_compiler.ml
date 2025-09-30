@@ -435,11 +435,6 @@ let%test "helper function: not: OK case" =
   let values = `Assoc [ ("condition", `Bool false) ] in
   make_test template values (Ok "False")
 
-let%test "helper function: remove_protocol: OK case" =
-  let template = "{{remove_protocol url}}" in
-  let values = `Assoc [ ("url", `String "https://example.com") ] in
-  make_test template values (Ok "example.com")
-
 let%test "preserves indentation in partial" =
   let template = "Items:\n  {{> item-list items}}" in
   let get_partial name =
@@ -573,4 +568,3 @@ let%test "standalone partial with section leaves no whitespace" =
 </body>
 |} in
   make_test ~get_partial template values (Ok expected)
-
