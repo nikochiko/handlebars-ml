@@ -22,7 +22,8 @@
  (description "OCaml port of the Handlebars.js templating engine")
  (depends ocaml
           yojson
-          ISO8601)
+          ISO8601
+          ppx_deriving)
  (tags
   ("handlebars" "template")))
 
