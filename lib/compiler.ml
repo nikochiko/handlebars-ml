@@ -273,10 +273,9 @@ let default_get_helper name =
 
 let default_get_partial _name = None
 
-let apply_indent s indent =
-  if indent <= 0 then s
+let apply_indentation s indentation =
+  if indentation = "" then s
   else
-    let indentation = String.make indent ' ' in
     let lines = String.split_on_char '\n' s in
     let len = List.length lines in
     lines
@@ -285,62 +284,83 @@ let apply_indent s indent =
            else indentation ^ line)
     |> String.concat "\n"
 
+(* this hack is not pretty. but works for now to identify standalone templates *)
+let newline_sentinel_char = '\x1B'
+let newline_sentinel = "\x1B"
+
 let compile_tokens get_helper get_partial tokens values =
-  let starts_with_newline s = String.length s > 0 && s.[0] = '\n' in
-  let handle_standalone_block pre content1 content2 rest =
-    let aux lhs rhs =
+  let starts_with_newline s = String.length s > 0 && (s.[0] = '\n' || s.[0] = newline_sentinel_char) in
+  let swap_newline_sentinel s =
+    if s.[0] = '\n' then newline_sentinel ^ String.sub s 1 (String.length s - 1)
+    else s
+  in
+  let drop_left n s =
+    if String.length s <= n then "" else String.sub s n (String.length s - n)
+  in
+  let handle_standalone_block ?(bv="") pre content1 content2 rest =
+    let auxr lhs rhs =
       match (List.rev lhs, rhs) with
-      | `Whitespace s1 :: lhs_rev_rest, `Whitespace s2 :: rhs_rest
+      | (`Whitespace s1) :: lhs_rev_rest, `Whitespace s2 :: rhs_rest
         when starts_with_newline s1 && starts_with_newline s2 ->
-          (List.rev lhs_rev_rest, `Whitespace s2 :: rhs_rest)
-      | ( `Whitespace s1 :: lhs_rev_rest,
-          `Whitespace _ :: `Whitespace s2 :: rhs_rest )
+          let left_ws = if bv <> "" then `Whitespace s1 else `Whitespace (String.make 1 s1.[0]) in
+          (List.rev (left_ws :: lhs_rev_rest), `Whitespace (swap_newline_sentinel s2) :: rhs_rest)
+      |   `Whitespace s1 :: lhs_rev_rest,
+          `Whitespace _ :: `Whitespace s2 :: rhs_rest
         when starts_with_newline s1 && starts_with_newline s2 ->
-          (List.rev lhs_rev_rest, `Whitespace s2 :: rhs_rest)
+          let left_ws = if bv <> "" then `Whitespace s1 else `Whitespace (String.make 1 s1.[0]) in
+          (List.rev (left_ws :: lhs_rev_rest), `Whitespace (swap_newline_sentinel s2) :: rhs_rest)
       | _ -> (lhs, rhs)
     in
-    let pre', content1 = aux [ `Whitespace pre ] content1 in
+    let pre = if pre = "" then newline_sentinel else pre in
+    let pre', content1 = auxr [ `Whitespace pre ] content1 in
     let pre =
       match pre' with
-      | [] | [ `Whitespace "\n|SENTINEL|" ] -> ""
+      | [] -> ""
+      | `Whitespace s :: _ when String.length s > 0 && s.[0] = newline_sentinel_char -> drop_left 1 s
       | `Whitespace s :: _ -> s
       | _ -> pre
     in
     match content2 with
     | [] ->
-        let content1, rest = aux content1 rest in
+        let content1, rest = auxr content1 rest in
         (pre, content1, content2, rest)
     | _ ->
-        let content1, content2 = aux content1 content2 in
-        let content2, rest = aux content2 rest in
+        let content1, content2 = auxr content1 content2 in
+        let content2, rest = auxr content2 rest in
         (pre, content1, content2, rest)
   in
-  let rec compile_maybe_standalone_ws ~pre t acc ctx rest =
-    match t with
+  let rec compile_maybe_standalone_ws pre curr acc ctx rest =
+    let* (acc, ctx, rest) = match curr with
     | `Partial { name; context; hash_args } -> (
-        let indent = String.length pre - 1 in
-        let* v = compile_partial ~indent name context hash_args ctx in
-        match v with
-        | "" ->
-            let pre, rest, _, _ = handle_standalone_block pre rest [] [] in
-            compile_token_list (pre :: acc) ctx rest
-        | _ ->
-            let pre = match pre with "\n|SENTINEL|" -> "" | _ -> pre in
-            compile_token_list (v :: pre :: acc) ctx rest)
-    | `Block { expr; content; else_content; kind } when kind = Section ->
+        let indentation =
+          match pre with
+          | s when starts_with_newline s -> String.sub s 1 (String.length s - 1)
+          | _ -> pre
+        in
+        let* v = compile_partial ~indentation name context hash_args ctx in
+        let pre, rest, _, _ = handle_standalone_block ~bv:v pre rest [] [] in
+        let acc = v :: pre :: acc in
+        Ok (acc, ctx, rest))
+    | `Block { expr; content; else_content; kind } when kind = Section -> (
         let pre, content, else_content, rest =
           handle_standalone_block pre content else_content rest
         in
         let* compiled_block = compile_block expr content else_content ctx in
-        compile_token_list (compiled_block :: pre :: acc) ctx rest
+        let acc = compiled_block :: pre :: acc in
+        Ok (acc, ctx, rest))
     | `Block { expr; content; else_content; kind } when kind = InvertedSection
-      ->
+      -> (
         let pre, else_content, content, rest =
           handle_standalone_block pre else_content content rest
         in
         let* compiled_block = compile_block expr content else_content ctx in
-        compile_token_list (compiled_block :: pre :: acc) ctx rest
+        let acc = compiled_block :: pre :: acc in
+        Ok (acc, ctx, rest))
     | _ -> failwith "expected partial or block only"
+    in match rest with
+    | (`Partial _ | `Block _ as curr) :: rest' ->
+        compile_maybe_standalone_ws "" curr acc ctx rest'
+    | _ -> compile_token_list acc ctx rest
   and compile_token_list acc ctx tokens =
     match tokens with
     | [] -> Ok (List.rev acc |> String.concat "")
@@ -350,11 +370,11 @@ let compile_tokens get_helper get_partial tokens values =
     | `WhitespaceControl :: rest ->
         compile_token_list acc ctx rest
     | `Raw s :: rest -> compile_token_list (s :: acc) ctx rest
-    | `Whitespace s :: ((`Block _ | `Partial _) as t) :: rest
-      when starts_with_newline s ->
-        compile_maybe_standalone_ws ~pre:s t acc ctx rest
-    | `Whitespace s :: rest when s = "\n|SENTINEL|" ->
-        compile_token_list acc ctx rest
+    | `Whitespace pre :: ((`Block _ | `Partial _) as curr) :: rest
+      when starts_with_newline pre ->
+        compile_maybe_standalone_ws pre curr acc ctx rest
+    | `Whitespace s :: rest when String.length s > 0 && s.[0] = newline_sentinel_char ->
+        compile_token_list (String.sub s 1 (String.length s - 1) :: acc) ctx rest
     | `Whitespace s :: rest -> compile_token_list (s :: acc) ctx rest
     | `Escaped expr :: rest ->
         let* value = eval ctx get_helper expr in
@@ -432,7 +452,7 @@ let compile_tokens get_helper get_partial tokens values =
         match is_truthy v with
         | true -> compile_token_list [] (make_ctx ~parent_ctx:ctx v) content
         | false -> compile_token_list [] ctx else_content)
-  and compile_partial ?(indent = 0) name context_opt hash_args ctx =
+  and compile_partial ?(indentation = "") name context_opt hash_args ctx =
     match get_partial name with
     | None -> Error (Missing_partial name)
     | Some partial_template -> (
@@ -485,10 +505,10 @@ let compile_tokens get_helper get_partial tokens values =
               compile_token_list [] partial_ctx_with_hash partial_tokens
             with
             | Error e -> Error (Partial_compile_error (name, e))
-            | Ok compiled -> Ok (apply_indent compiled indent)))
+            | Ok compiled -> Ok (apply_indentation compiled indentation)))
   in
   let ctx = make_ctx values in
-  let tokens = `Whitespace "\n|SENTINEL|" :: tokens in
+  let tokens = `Whitespace newline_sentinel :: tokens in
   compile_token_list [] ctx tokens
 
 let compile ?(get_helper = default_get_helper)
@@ -1056,3 +1076,55 @@ let%test "standalone partials do not leave empty line behind" =
   let values = `Assoc [] in
   let expected = "\n    Items:\n    End of list.\n" in
   make_test ~get_partial template values (Ok expected)
+
+let%test "standalone block helpers do not leave empty line behind" =
+  let template =
+    {|
+    {{#if condition}}
+      Condition is true.
+    {{/if}}
+    After condition.
+|}
+    in
+    let values = `Assoc [ ("condition", `Bool true) ] in
+    make_test template values (Ok "\n      Condition is true.\n    After condition.\n")
+
+let%test "nested helper blocks don't consume lines" =
+  let template =
+    {|
+    {{#if condition}}
+      {{#each items}}
+      {{> item-view this }}
+      {{/each}}
+    {{/if}}
+|}
+  in
+  let get_partial name =
+    match name with
+    | "item-view" -> Some "- {{this}}\n"
+    | _ -> None
+  in
+  let values = `Assoc [ ("condition", `Bool true); ("items", `List [ `String "a"; `String "b" ]) ] in
+  let expected = "\n      - a\n      - b\n" in
+  make_test ~get_partial template values (Ok expected)
+
+let%test "standalone partials are handled correctly" =
+  let template = {|
+1
+{{> pat }}
+{{> pat }}
+2
+|} in
+  let get_partial name =
+    match name with "pat" -> Some "PARTIAL" | _ -> None
+  in
+  let values = `Assoc [] in
+  let expected = "\n1\nPARTIALPARTIAL2\n" in
+  make_test ~get_partial template values (Ok expected)
+
+let%test "standalone block at the beginning does not leave empty line" =
+  let template = {|{{#if condition}}
+Condition is true.
+{{/if}}|} in
+  let values = `Assoc [ ("condition", `Bool true) ] in
+  make_test template values (Ok "Condition is true.\n")
