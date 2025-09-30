@@ -1,5 +1,4 @@
 (lang dune 3.18)
-(using menhir 3.0)
 
 (name handlebars-ml)
 (version 0.1.2)
