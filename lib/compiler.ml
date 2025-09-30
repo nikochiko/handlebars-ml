@@ -501,6 +501,7 @@ let compile_tokens get_helper get_partial tokens values =
         match Parser.parse lexbuf with
         | Error e -> Error (Partial_parse_error (name, e))
         | Ok partial_tokens -> (
+            let partial_tokens = `Whitespace newline_sentinel :: partial_tokens in
             match
               compile_token_list [] partial_ctx_with_hash partial_tokens
             with
@@ -1128,3 +1129,30 @@ Condition is true.
 {{/if}}|} in
   let values = `Assoc [ ("condition", `Bool true) ] in
   make_test template values (Ok "Condition is true.\n")
+
+let%test "standalone partial with section leaves no whitespace" =
+  let template = {|
+<body>
+  <main>
+    {{> header}}
+  </main>
+</body>
+|}
+  in 
+  let get_partial name =
+    match name with
+    | "header" -> Some {|{{#basics}}
+<h1>{{name}}</h1>
+{{/basics}}
+|}
+    | _ -> None
+  in
+  let values = `Assoc [ ("basics", `Assoc [ ("name", `String "Title") ]) ] in
+  let expected = {|
+<body>
+  <main>
+    <h1>Title</h1>
+  </main>
+</body>
+|}
+  in make_test ~get_partial template values (Ok expected)
