@@ -1,2 +1,6 @@
-(test
- (name test_handlebars_ml))
+(library
+ (name handlebars_ml_tests)
+ (modules test_compiler test_parser)
+ (libraries handlebars_ml)
+ (inline_tests)
+ (preprocess (pps ppx_inline_test ppx_deriving.show ppx_deriving.eq)))
