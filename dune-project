@@ -2,6 +2,7 @@
 (using menhir 3.0)
 
 (name handlebars-ml)
+(version 0.1.2)
 
 (generate_opam_files true)
 
