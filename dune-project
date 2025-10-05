@@ -1,7 +1,7 @@
 (lang dune 3.18)
 
 (name handlebars-ml)
-(version 0.1.2)
+(version 0.2.0)
 
 (generate_opam_files true)
 
