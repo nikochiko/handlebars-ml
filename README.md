@@ -32,7 +32,7 @@ Use `Yojson` values for passing JSON data as template context.
 
 ```ocaml
 let () =
-    let data = Yojson.Basic.from_string {| { "name": "World" } |} in 
+    let data = Yojson.Safe.from_string {| { "name": "World" } |} in
     let template = "Hello, {{name}}!" in
     match Handlebars_ml.Compiler.compile template data with
     | Ok result -> print_endline result
@@ -54,7 +54,7 @@ let custom_get_helper name =
     | _ -> None
 
 let () =
-    let data = Yojson.Basic.from_string {| { "name": "World" } |} in 
+    let data = Yojson.Safe.from_string {| { "name": "World" } |} in
     let template = "Hello, {{shout name}}!" in
     match Handlebars_ml.Compiler.compile ~get_helper:custom_get_helper template data with
     | Ok result -> print_endline result

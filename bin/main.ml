@@ -56,18 +56,22 @@ let read_input source =
   | File filename -> read_file filename
 
 let parse_json json_str =
-  try Ok (Yojson.Basic.from_string json_str)
+  try Ok (Yojson.Safe.from_string json_str)
   with Yojson.Json_error msg -> Error ("JSON parse error: " ^ msg)
 
-let yojson_to_literal_or_collection json =
+let yojson_to_literal_or_collection (json : Yojson.Safe.t) :
+    Handlebars_ml.Types.literal_or_collection =
   let rec convert = function
     | `Null -> `Null
     | `Bool b -> `Bool b
     | `Int i -> `Int i
+    | `Intlit s -> `Intlit s
     | `Float f -> `Float f
     | `String s -> `String s
     | `List lst -> `List (List.map convert lst)
     | `Assoc lst -> `Assoc (List.map (fun (k, v) -> (k, convert v)) lst)
+    | `Tuple _ | `Variant _ ->
+        failwith "Unsupported Yojson variant: Tuple or Variant"
   in
   convert json
 

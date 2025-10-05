@@ -124,13 +124,6 @@ let invert_unclosed container =
       failwith "This looks like an extra 'else' block in the template"
   | _ -> failwith "Cannot invert a non-unclosed block"
 
-let parse_literal (lit : Yojson.Basic.t) : Types.literal =
-  match lit with
-  | `String s -> `String s
-  | `Int i -> `Int i
-  | `Float f -> `Float f
-  | _ -> failwith "Cannot lift non-literal to literal"
-
 let parse_path_segment token : Types.ident_path_segment =
   match token with
   | IDENT id -> `Ident id
@@ -264,7 +257,7 @@ and parse_application ~until buf =
 and parse_arguments ~until buf =
   let parse_arg = function
     | IDENT_PATH path -> Ok (`IdentPath (List.map parse_path_segment path))
-    | LITERAL lit -> Ok (`Literal (parse_literal lit))
+    | LITERAL lit -> Ok (`Literal lit)
     | LPAREN ->
         let* name, pos_args, _hash_args, _t =
           parse_application ~until:(equal_token RPAREN) buf

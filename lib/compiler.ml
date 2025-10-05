@@ -60,6 +60,7 @@ let literal_or_collection_of_literal (lit : literal) : literal_or_collection =
   | `Bool b -> `Bool b
   | `String s -> `String s
   | `Int i -> `Int i
+  | `Intlit s -> `Intlit s
   | `Float f -> `Float f
   | `Null -> `Null
 
@@ -78,6 +79,7 @@ let string_of_literal (lit : literal_or_collection) : string =
   match lit with
   | `String s -> s
   | `Int i -> string_of_int i
+  | `Intlit s -> s
   | `Float f -> string_of_float f
   | `Bool true -> "true"
   | `Bool false -> "false"

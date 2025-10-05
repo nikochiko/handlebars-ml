@@ -24,7 +24,7 @@ type token =
   | TEMPL_CLOSE of { ws_control: bool; is_unescaped: bool; raw: string }
   | IDENT_PATH of ident_path_segment list
   | COMMENT
-  | LITERAL of Yojson.Basic.t
+  | LITERAL of Types.literal
   | START_HASH_ARG of string
   | LPAREN
   | RPAREN
@@ -77,7 +77,12 @@ and lex_in_templ = parse
   | '(' { LPAREN }
   | ')' { RPAREN }
   | string_literal { LITERAL (`String s) }
-  | int_literal as s { LITERAL (`Int (int_of_string s)) }
+  | int_literal as s {
+      let v = match int_of_string_opt s with
+      | Some i -> `Int i
+      | None -> `Intlit s
+      in LITERAL v
+    }
   | float_literal as s { LITERAL (`Float (float_of_string s)) }
   | (ident as s) whitespace* '=' { START_HASH_ARG s }
   | '[' { lex_as_hash_arg_or_nested_index_path (lex_index lexbuf) lexbuf }

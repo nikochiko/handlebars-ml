@@ -1,7 +1,12 @@
 type dot_path = [ `OneDot | `TwoDot ] [@@deriving show, eq]
 
 type literal =
-  [ `String of string | `Int of int | `Float of float | `Bool of bool | `Null ]
+  [ `String of string
+  | `Int of int
+  | `Intlit of string
+  | `Float of float
+  | `Bool of bool
+  | `Null ]
 [@@deriving show, eq]
 
 type literal_or_collection =
