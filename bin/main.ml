@@ -1,4 +1,4 @@
-open Handlebars_ml.Compiler
+open Handlebars_ml
 
 type input_source = Stdin | File of string
 
@@ -60,7 +60,7 @@ let parse_json json_str =
   with Yojson.Json_error msg -> Error ("JSON parse error: " ^ msg)
 
 let yojson_to_literal_or_collection (json : Yojson.Safe.t) :
-    Handlebars_ml.Types.literal_or_collection =
+    Types.literal_or_collection =
   let rec convert = function
     | `Null -> `Null
     | `Bool b -> `Bool b
@@ -187,10 +187,8 @@ let main () =
       print_string result;
       exit 0
   | Error (ParseError err) ->
-      error_and_exit
-        ("Parsing error: " ^ Handlebars_ml.Parser.show_parse_error err)
-        4
+      error_and_exit ("Parsing error: " ^ Parser.show_parse_error err) 4
   | Error (CompileError err) ->
-      error_and_exit ("Compile error: " ^ show_compile_error err) 4
+      error_and_exit ("Compile error: " ^ Compiler.show_compile_error err) 4
 
 let () = main ()

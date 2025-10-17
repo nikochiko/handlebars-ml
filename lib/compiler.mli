@@ -61,12 +61,6 @@ val eval :
   (literal_or_collection, compile_error) result
 (** Evaluate an expression in a given context *)
 
-val string_of_literal : literal_or_collection -> string
-(** Convert a literal_or_collection to string representation *)
-
-val escape_html : string -> string
-(** Escape HTML entities in a string *)
-
 val compile_tokens :
   custom_helper_lookup_fn ->
   partial_lookup_fn ->
@@ -74,6 +68,12 @@ val compile_tokens :
   literal_or_collection ->
   compile_result
 (** Compile a list of tokens with given context and helpers *)
+
+val string_of_literal : literal_or_collection -> string
+(** Convert a literal_or_collection to string representation *)
+
+val escape_html : string -> string
+(** Escape HTML entities in a string *)
 
 val default_get_helper : custom_helper_lookup_fn
 (** Default helper lookup function with built-in helpers *)
