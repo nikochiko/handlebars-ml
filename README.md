@@ -34,7 +34,7 @@ Use `Yojson` values for passing JSON data as template context.
 let () =
     let data = Yojson.Safe.from_string {| { "name": "World" } |} in
     let template = "Hello, {{name}}!" in
-    match Handlebars_ml.Compiler.compile template data with
+    match Handlebars_ml.compile template data with
     | Ok result -> print_endline result
     | Error err -> prerr_endline ("Error: " ^ err)
 ```
@@ -51,18 +51,18 @@ let custom_get_helper name =
     in
     match name with
     | "shout" -> Some shout
-    | _ -> None
+    | _ -> Handlebars_ml.default_get_helper name
 
 let () =
     let data = Yojson.Safe.from_string {| { "name": "World" } |} in
     let template = "Hello, {{shout name}}!" in
-    match Handlebars_ml.Compiler.compile ~get_helper:custom_get_helper template data with
+    match Handlebars_ml.compile ~get_helper:custom_get_helper template data with
     | Ok result -> print_endline result
     | Error err -> prerr_endline ("Error: " ^ err)
 ```
 
 `handlebars-ml` provides a `default_get_helper` function in
-`Handlebars_ml.Compiler` that can be used in your custom implementation
+`Handlebars_ml` that can be used in your custom implementation
 to still keep the default helpers.
 
 ## License
