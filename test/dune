@@ -1,6 +1,5 @@
-(executables
- (public_names test_handlebars_ml)
- (names test_handlebars_ml)
+(test
+ (name test_handlebars_ml)
  (libraries handlebars_ml alcotest)
  (preprocess
   (pps ppx_deriving.show ppx_deriving.eq)))
