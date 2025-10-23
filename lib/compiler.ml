@@ -14,16 +14,16 @@ type compile_error =
       [@printer
         fun fmt (name, e) ->
           Format.fprintf fmt "In partial \"%s\": %s" name (show_compile_error e)]
-[@@deriving show]
+[@@deriving show, eq]
 
 type compile_result = (string, compile_error) result
 
 type hb_error =
   | ParseError of Parser.parse_error
   | CompileError of compile_error
-[@@deriving show]
+[@@deriving show, eq]
 
-type hb_result = (string, hb_error) result [@@deriving show]
+type hb_result = (string, hb_error) result [@@deriving show, eq]
 
 type context_values = {
   v : literal_or_collection;

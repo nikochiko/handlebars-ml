@@ -23,7 +23,7 @@
  (depends (ocaml (>= 4.14))
           (yojson (>= 2.0))
           ppx_deriving
-          (ppx_inline_test :with-test))
+          (alcotest :with-test))
  (tags
   ("handlebars" "template")))
 

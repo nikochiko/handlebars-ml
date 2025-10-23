@@ -8,7 +8,7 @@ type compile_error =
       (** Parsing error in a partial template *)
   | Partial_compile_error of string * compile_error
       (** Compilation error in a partial template *)
-[@@deriving show]
+[@@deriving show, eq]
 
 type compile_result = (string, compile_error) result
 (** Result type for compilation operations *)
@@ -17,9 +17,9 @@ type compile_result = (string, compile_error) result
 type hb_error =
   | ParseError of Parser.parse_error  (** Error during parsing *)
   | CompileError of compile_error  (** Error during compilation *)
-[@@deriving show]
+[@@deriving show, eq]
 
-type hb_result = (string, hb_error) result [@@deriving show]
+type hb_result = (string, hb_error) result [@@deriving show, eq]
 (** Result type for complete handlebars processing *)
 
 type context_values = {
