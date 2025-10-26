@@ -3,6 +3,8 @@ open Types
 (** Compilation errors that can occur during template processing *)
 type compile_error =
   | Missing_helper of string  (** Helper function not found *)
+  | Bad_helper_arguments of string * int
+      (** Incorrect number of arguments for a helper function *)
   | Missing_partial of string  (** Partial template not found *)
   | Partial_parse_error of string * Parser.parse_error
       (** Parsing error in a partial template *)

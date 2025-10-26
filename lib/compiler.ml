@@ -3,6 +3,10 @@ open Types
 type compile_error =
   | Missing_helper of string
       [@printer fun fmt -> fprintf fmt "Missing helper: %s"]
+  | Bad_helper_arguments of string * int
+      [@printer
+        fun fmt (name, n) ->
+          fprintf fmt "Helper %s expects exactly %d arguments" name n]
   | Missing_partial of string
       [@printer fun fmt -> fprintf fmt "Missing partial: %s"]
   | Partial_parse_error of string * Parser.parse_error
@@ -462,6 +466,9 @@ let compile_tokens get_helper get_partial tokens values =
               in
               Ok (List.rev all_compiled |> String.concat "")
           | _ -> compile_token_list [] ctx else_content)
+    | `App (builtin_name, _)
+      when List.mem builtin_name [ "if"; "unless"; "with"; "each" ] ->
+        Error (Bad_helper_arguments (builtin_name, 1))
     | other_expr -> (
         let* v = eval ctx get_helper other_expr in
         match is_truthy v with
