@@ -400,6 +400,12 @@ let compile_tokens get_helper get_partial tokens values =
           if is_truthy value then content else else_content
         in
         compile_token_list [] ctx content_to_use
+    | `App ("unless", [ condition ]) ->
+        let* value = eval ctx get_helper condition in
+        let content_to_use =
+          if not (is_truthy value) then content else else_content
+        in
+        compile_token_list [] ctx content_to_use
     | `App ("with", [ context_expr ]) ->
         let* v = eval ctx get_helper context_expr in
         let new_ctx = make_ctx ~parent_ctx:ctx v in
