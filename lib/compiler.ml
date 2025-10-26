@@ -426,13 +426,20 @@ let compile_tokens get_helper get_partial tokens values =
               in
               Ok (List.rev all_compiled |> String.concat "")
           | `Assoc lst ->
-              let compile_for_each (k, v) =
-                let extras = [ ("@key", `String k) ] in
+              let compile_for_each i (k, v) =
+                let extras =
+                  [
+                    ("@index", `Int i);
+                    ("@first", `Bool (i = 0));
+                    ("@last", `Bool (i = List.length lst - 1));
+                    ("@key", `String k);
+                  ]
+                in
                 let item_ctx = make_ctx ~parent_ctx:ctx ~extras v in
                 compile_token_list [] item_ctx content
               in
               let* all_compiled =
-                List.map compile_for_each lst
+                List.mapi compile_for_each lst
                 |> List.fold_left
                      (fun acc_result compiled_result ->
                        let* acc = acc_result in
