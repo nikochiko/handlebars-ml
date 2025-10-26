@@ -75,7 +75,7 @@ let is_truthy = function
       false
   | _ -> true
 
-let string_of_literal (lit : literal_or_collection) : string =
+let rec string_of_literal (lit : literal_or_collection) : string =
   match lit with
   | `String s -> s
   | `Int i -> string_of_int i
@@ -83,8 +83,15 @@ let string_of_literal (lit : literal_or_collection) : string =
   | `Float f -> string_of_float f
   | `Bool true -> "true"
   | `Bool false -> "false"
+  | `List lst ->
+      lst
+      |> List.map (fun item ->
+             match item with
+             | `List _ -> "[" ^ string_of_literal item ^ "]"
+             | _ -> string_of_literal item)
+      |> String.concat ","
   | `Null -> ""
-  | `List _ | `Assoc _ -> ""
+  | `Assoc _ -> ""
 
 let escape_html s =
   let b = Buffer.create (String.length s) in
