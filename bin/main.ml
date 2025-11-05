@@ -60,7 +60,7 @@ let parse_json json_str =
   with Yojson.Json_error msg -> Error ("JSON parse error: " ^ msg)
 
 let yojson_to_literal_or_collection (json : Yojson.Safe.t) :
-    Types.literal_or_collection =
+    Handlebars.Types.literal_or_collection =
   let rec convert = function
     | `Null -> `Null
     | `Bool b -> `Bool b
@@ -182,13 +182,11 @@ let main () =
   let get_partial name = List.assoc_opt name all_partials in
 
   (* Compile template *)
-  match compile ~get_partial template data with
+  match Handlebars.compile ~get_partial template data with
   | Ok result ->
       print_string result;
       exit 0
-  | Error (ParseError err) ->
-      error_and_exit ("Parsing error: " ^ Parser.show_parse_error err) 4
-  | Error (CompileError err) ->
-      error_and_exit ("Compile error: " ^ Compiler.show_compile_error err) 4
+  | Error e ->
+      error_and_exit (Handlebars.show_hb_error e) 4
 
 let () = main ()

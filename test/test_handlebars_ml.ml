@@ -1,49 +1,47 @@
-open Handlebars_ml.Compiler
-open Handlebars_ml.Types
-open Handlebars_ml.Parser
+open Handlebars_ml
 
 let hb_result_testable =
   let pp fmt = function
     | Ok s -> Format.fprintf fmt "Ok %S" s
-    | Error e -> Format.fprintf fmt "Error (%s)" (Handlebars_ml.Compiler.show_hb_error e)
+    | Error e -> Format.fprintf fmt "Error (%s)" (Handlebars.Compiler.show_hb_error e)
   in
   let equal a b = match (a, b) with
     | (Ok a, Ok b) -> String.equal a b
-    | (Error a, Error b) -> Handlebars_ml.Compiler.equal_hb_error a b
+    | (Error a, Error b) -> Handlebars.Compiler.equal_hb_error a b
     | _ -> false
   in
   Alcotest.testable pp equal
 
 let parse_result_testable =
   let pp fmt = function
-    | Ok tokens -> Format.fprintf fmt "Ok [%s]" (String.concat "; " (List.map Handlebars_ml.Types.show_token tokens))
-    | Error e -> Format.fprintf fmt "Error (%s)" (Handlebars_ml.Parser.show_parse_error e)
+    | Ok tokens -> Format.fprintf fmt "Ok [%s]" (String.concat "; " (List.map Handlebars.Types.show_token tokens))
+    | Error e -> Format.fprintf fmt "Error (%s)" (Handlebars.Parser.show_parse_error e)
   in
   let equal a b = match (a, b) with
-    | (Ok a, Ok b) -> List.for_all2 Handlebars_ml.Types.equal_token a b
-    | (Error a, Error b) -> Handlebars_ml.Parser.equal_parse_error a b
+    | (Ok a, Ok b) -> List.for_all2 Handlebars.Types.equal_token a b
+    | (Error a, Error b) -> Handlebars.Parser.equal_parse_error a b
     | _ -> false
   in
   Alcotest.testable pp equal
 
-let make_compiler_test ?(get_helper = default_get_helper)
-    ?(get_partial = default_get_partial) name template values expected =
+let make_compiler_test ?(get_helper = Handlebars.default_get_helper)
+    ?(get_partial = Handlebars.default_get_partial) name template values expected =
   Alcotest.test_case name `Quick (fun () ->
-    let result = compile ~get_helper ~get_partial template values in
+    let result = Handlebars.compile ~get_helper ~get_partial template values in
     Alcotest.(check hb_result_testable) "compiler result" expected result
   )
 
 let make_parser_test name input expected =
   Alcotest.test_case name `Quick (fun () ->
     let buf = Lexing.from_string input in
-    let result = parse buf in
+    let result = Handlebars.Parser.parse buf in
     Alcotest.(check parse_result_testable) "parser result" expected result
   )
 
 let mk_test_err msg lnum cnum =
   Error
     {
-      msg;
+      Handlebars.Parser.msg;
       pos =
         { Lexing.pos_fname = ""; pos_lnum = lnum; pos_bol = 0; pos_cnum = cnum };
       buf = Lexing.from_string "";
@@ -98,7 +96,7 @@ let compiler_tests = [
   make_compiler_test "missing helper error"
     "{{missing_helper name}}"
     (`Assoc [ ("name", `String "test") ])
-    (Error (CompileError (Missing_helper "missing_helper")));
+    (Error (Missing_helper "missing_helper"));
 
   make_compiler_test "if block with truthy value"
     "{{#if user}}Hello {{user.name}}{{/if}}"
@@ -138,7 +136,7 @@ let compiler_tests = [
             (function
             | [ `String name ] -> Some (`String ("Hello, " ^ name ^ "!"))
             | _ -> None)
-      | _ -> default_get_helper name)
+      | _ -> Handlebars.default_get_helper name)
     "{{greet name}}"
     (`Assoc [ ("name", `String "Alice") ])
     (Ok "Hello, Alice!");
@@ -168,7 +166,7 @@ let compiler_tests = [
     ~get_helper:(fun name ->
       match name with
       | "name" -> Some (fun _ -> Some (`String "from helper"))
-      | _ -> default_get_helper name)
+      | _ -> Handlebars.default_get_helper name)
     "{{name}}"
     (`Assoc [ ("name", `String "from variable") ])
     (Ok "from helper");
@@ -211,7 +209,7 @@ let compiler_tests = [
       match name with "recursive" -> Some "{{> recursive}}" | _ -> None)
     "{{> missing}}"
     (`Assoc [])
-    (Error (CompileError (Missing_partial "missing")));
+    (Error (Missing_partial "missing"));
 
   make_compiler_test "partial with explicit context should work"
     ~get_partial:(fun name ->
@@ -776,7 +774,7 @@ let parser_tests = [
 
   Alcotest.test_case "lexing unclosed '{{{' block throws error" `Quick (fun () ->
     let buf = Lexing.from_string "hello, {{{ ~a.b.c }}" in
-    let result = parse buf in
+    let result = Handlebars.Parser.parse buf in
     match result with Ok _ -> Alcotest.fail "Expected error" | Error _ -> ());
 
   make_parser_test "parses fn application without parenthesis"
@@ -859,12 +857,12 @@ let parser_tests = [
 
   Alcotest.test_case "parses else block without open block as Error" `Quick (fun () ->
     let buf = Lexing.from_string "{{#if a}}ok{{/if}} {{else}} no business here" in
-    let result = parse buf in
+    let result = Handlebars.Parser.parse buf in
     match result with Ok _ -> Alcotest.fail "Expected error" | Error _ -> ());
 
   Alcotest.test_case "parses mismatching close block as Error" `Quick (fun () ->
     let buf = Lexing.from_string "{{#if a}}ok{{/each}}" in
-    let result = parse buf in
+    let result = Handlebars.Parser.parse buf in
     match result with Ok _ -> Alcotest.fail "Expected error" | Error _ -> ());
 
   make_parser_test "parses mustache-style open & close blocks"

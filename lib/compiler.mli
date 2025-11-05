@@ -1,28 +1,18 @@
 open Types
 
 (** Compilation errors that can occur during template processing *)
-type compile_error =
+type hb_error =
+  | Parse_error of Parser.parse_error
   | Missing_helper of string  (** Helper function not found *)
   | Bad_helper_arguments of string * int
       (** Incorrect number of arguments for a helper function *)
   | Missing_partial of string  (** Partial template not found *)
-  | Partial_parse_error of string * Parser.parse_error
+  | Partial_error of string * hb_error
       (** Parsing error in a partial template *)
-  | Partial_compile_error of string * compile_error
-      (** Compilation error in a partial template *)
 [@@deriving show, eq]
 
-type compile_result = (string, compile_error) result
+type hb_result = (string, hb_error) result
 (** Result type for compilation operations *)
-
-(** Combined error type for both lexing and compilation errors *)
-type hb_error =
-  | ParseError of Parser.parse_error  (** Error during parsing *)
-  | CompileError of compile_error  (** Error during compilation *)
-[@@deriving show, eq]
-
-type hb_result = (string, hb_error) result [@@deriving show, eq]
-(** Result type for complete handlebars processing *)
 
 type context_values = {
   v : literal_or_collection;
@@ -60,7 +50,7 @@ val eval :
   context ->
   custom_helper_lookup_fn ->
   evalable ->
-  (literal_or_collection, compile_error) result
+  (literal_or_collection, hb_error) result
 (** Evaluate an expression in a given context *)
 
 val compile_tokens :
@@ -68,7 +58,7 @@ val compile_tokens :
   partial_lookup_fn ->
   token list ->
   literal_or_collection ->
-  compile_result
+  hb_result
 (** Compile a list of tokens with given context and helpers *)
 
 val string_of_literal : literal_or_collection -> string

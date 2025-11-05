@@ -1,6 +1,7 @@
 open Types
 
-type compile_error =
+type hb_error =
+  | Parse_error of Parser.parse_error [@printer Parser.pp_parse_error]
   | Missing_helper of string
       [@printer fun fmt -> fprintf fmt "Missing helper: %s"]
   | Bad_helper_arguments of string * int
@@ -9,25 +10,14 @@ type compile_error =
           fprintf fmt "Helper %s expects exactly %d arguments" name n]
   | Missing_partial of string
       [@printer fun fmt -> fprintf fmt "Missing partial: %s"]
-  | Partial_parse_error of string * Parser.parse_error
+  | Partial_error of string * hb_error
       [@printer
         fun fmt (name, e) ->
-          Format.fprintf fmt "Parsing error in partial \"%s\": %s" name
-            (Parser.show_parse_error e)]
-  | Partial_compile_error of string * compile_error
-      [@printer
-        fun fmt (name, e) ->
-          Format.fprintf fmt "In partial \"%s\": %s" name (show_compile_error e)]
+          Format.fprintf fmt "In partial: \"%s\": %s" name
+            (show_hb_error e)]
 [@@deriving show, eq]
 
-type compile_result = (string, compile_error) result
-
-type hb_error =
-  | ParseError of Parser.parse_error
-  | CompileError of compile_error
-[@@deriving show, eq]
-
-type hb_result = (string, hb_error) result [@@deriving show, eq]
+type hb_result = (string, hb_error) result
 
 type context_values = {
   v : literal_or_collection;
@@ -521,7 +511,7 @@ let compile_tokens get_helper get_partial tokens values =
         (* Parse and compile the partial template *)
         let lexbuf = Lexing.from_string partial_template in
         match Parser.parse lexbuf with
-        | Error e -> Error (Partial_parse_error (name, e))
+        | Error e -> Error (Partial_error (name, Parse_error e))
         | Ok partial_tokens -> (
             let partial_tokens =
               `Whitespace newline_sentinel :: partial_tokens
@@ -529,7 +519,7 @@ let compile_tokens get_helper get_partial tokens values =
             match
               compile_token_list [] partial_ctx_with_hash partial_tokens
             with
-            | Error e -> Error (Partial_compile_error (name, e))
+            | Error e -> Error (Partial_error (name, e))
             | Ok compiled -> Ok (apply_indentation compiled indentation)))
   in
   let ctx = make_ctx values in
@@ -540,8 +530,5 @@ let compile ?(get_helper = default_get_helper)
     ?(get_partial = default_get_partial) template values =
   let lexbuf = Lexing.from_string template in
   match Parser.parse lexbuf with
-  | Error e -> Error (ParseError e)
-  | Ok tokens -> (
-      match compile_tokens get_helper get_partial tokens values with
-      | Error e -> Error (CompileError e)
-      | Ok result -> Ok result)
+  | Error e -> Error (Parse_error e)
+  | Ok tokens -> compile_tokens get_helper get_partial tokens values
