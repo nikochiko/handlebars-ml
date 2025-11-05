@@ -31,10 +31,12 @@ handlebars-ml -h
 Use `Yojson` values for passing JSON data as template context.
 
 ```ocaml
+open Handlebars_ml
+
 let () =
     let data = Yojson.Safe.from_string {| { "name": "World" } |} in
     let template = "Hello, {{name}}!" in
-    match Handlebars_ml.compile template data with
+    match Handlebars.compile template data with
     | Ok result -> print_endline result
     | Error err -> prerr_endline ("Error: " ^ err)
 ```
@@ -44,6 +46,8 @@ Pass `get_helper` and `get_partial` functions as named arguments to
 arguments and return values.
 
 ```ocaml
+open Handlebars_ml
+
 let custom_get_helper name =
     let shout = function
     | [ `String s ] -> Some (`String (String.uppercase_ascii arg))
@@ -51,12 +55,12 @@ let custom_get_helper name =
     in
     match name with
     | "shout" -> Some shout
-    | _ -> Handlebars_ml.default_get_helper name
+    | _ -> Handlebars.default_get_helper name
 
 let () =
     let data = Yojson.Safe.from_string {| { "name": "World" } |} in
     let template = "Hello, {{shout name}}!" in
-    match Handlebars_ml.compile ~get_helper:custom_get_helper template data with
+    match Handlebars.compile ~get_helper:custom_get_helper template data with
     | Ok result -> print_endline result
     | Error err -> prerr_endline ("Error: " ^ err)
 ```
