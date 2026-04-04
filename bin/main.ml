@@ -9,7 +9,7 @@ type config = {
   partials_dir : string option;
 }
 
-let version = "0.3.0"
+let version = "0.3.1"
 
 let usage_msg =
   "handlebars-ml [OPTIONS] [TEMPLATE_FILE]\n\n"
