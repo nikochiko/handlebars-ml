@@ -651,7 +651,7 @@ let parser_tests = [
 
   make_parser_test "parses template with escaped chars"
     "hello \\{{world}}"
-    (Ok [ `Raw "hello"; `Whitespace " "; `Raw "{"; `Raw "{"; `Raw "world}}" ]);
+    (Ok [ `Raw "hello"; `Whitespace " "; `Raw "{{"; `Raw "world}}" ]);
 
   make_parser_test "parses template with substitution block"
     "hello, {{world}}"

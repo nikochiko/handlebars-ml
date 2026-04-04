@@ -52,7 +52,8 @@ let float_literal = '-'? ['0'-'9']+ '.' ['0'-'9']* (['e' 'E'] ['+' '-']? ['0'-'9
 let ident = ['a'-'z' 'A'-'Z' '_' '@'] (['a'-'z' 'A'-'Z' '0'-'9' '_' '-']*)
 
 rule lex = parse
-  | '\\' ('{' as c) { RAW (String.make 1 c) }
+  | '\\' ("{{" as s) { RAW s }
+  | '\\' as c { RAW (String.make 1 c) }
   | templ_open ('~'? as ws_control) { lex_in_templ_open (ws_control = "~") lexbuf }
   | '{' { RAW (lexeme lexbuf) }
   | whitespace+ as s { WHITESPACE s }
