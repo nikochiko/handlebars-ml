@@ -13,8 +13,8 @@ type hb_error =
   | Partial_error of string * hb_error
       [@printer
         fun fmt (name, e) ->
-          Format.fprintf fmt "In partial: \"%s\": %s" name
-            (show_hb_error e)]
+          Format.fprintf fmt "In partial: \"%s\": %a" name
+            pp_hb_error e]
 [@@deriving show, eq]
 
 type hb_result = (string, hb_error) result
